@@ -926,6 +926,7 @@ with tab_coach:
                         headers={
                             "Content-Type": "application/json",
                             "anthropic-version": "2023-06-01",
+                            "x-api-key": st.secrets["ANTHROPIC_API_KEY"],
                         },
                         method="POST"
                     )
