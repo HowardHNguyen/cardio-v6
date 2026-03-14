@@ -1,0 +1,11 @@
+streamlit>=1.10.0
+pandas
+joblib
+numpy
+matplotlib
+tensorflow  # or tensorflow-cpu if GPU isn't necessary
+scikit-learn
+xgboost
+altair==4.2.0
+scikeras
+shap
