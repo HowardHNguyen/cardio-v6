@@ -306,13 +306,20 @@ def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
         feature_names = feature_names,
     )
 
-    fig, ax = plt.subplots(figsize=(9, max(8, max_display * 0.48)))
-    shap.plots.waterfall(explanation, max_display=max_display, show=False)
+    # Trim max_display to exclude features whose |SHAP| rounds to 0.00
+    # so bars labeled '+0' or '-0' never appear.
+    sorted_abs = np.sort(np.abs(shap_vals_1d))[::-1]
+    # Find how many features have |SHAP| >= 0.005 (shows as ≥ +0.01 with 2dp)
+    meaningful = int(np.sum(sorted_abs >= 0.005))
+    # Always show at least 5, at most max_display
+    effective_max = max(5, min(max_display, meaningful))
+
+    fig, ax = plt.subplots(figsize=(9, max(6, effective_max * 0.52)))
+    shap.plots.waterfall(explanation, max_display=effective_max, show=False)
     fig = plt.gcf()
     fig.suptitle(title, fontsize=11, fontweight="bold",
                  color="#0f4c75", y=1.02)
     plt.tight_layout()
-    # Extra bottom padding so E[f(X)] x-axis label is never clipped
     fig.subplots_adjust(bottom=0.12)
     st.pyplot(fig, clear_figure=True)
 
