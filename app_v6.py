@@ -118,29 +118,41 @@ FIELD_CONFIG = {
     "HYPERTEN": ("Currently diagnosed with hypertension?", "Has your doctor diagnosed you with hypertension (high blood pressure)?"),
 }
 
-# SHAP-friendly plain text for patient display
+# SHAP-friendly plain text for patient display (all 24 features)
 SHAP_FRIENDLY = {
-    "SYSBP":    "High systolic blood pressure (top number)",
-    "DIABP":    "High diastolic blood pressure (bottom number)",
-    "CIGPDAY":  "Smoking (cigarettes per day)",
-    "AGE":      "Age",
     "SEX":      "Male sex",
-    "GLUCOSE":  "Blood sugar levels",
-    "DIABETES": "Diabetes",
-    "BPMEDS":   "Blood pressure medication use",
-    "PREVMI":   "Prior heart attack",
-    "PREVCHD":  "Prior heart disease",
-    "PREVSTRK": "Prior stroke",
-    "PREVHYP":  "History of hypertension",
     "TOTCHOL":  "Total cholesterol",
+    "AGE":      "Age",
+    "SYSBP":    "Systolic blood pressure (top number)",
+    "DIABP":    "Diastolic blood pressure",
+    "CIGPDAY":  "Smoking (cigarettes per day)",
     "BMI":      "Body weight (BMI)",
+    "DIABETES": "Diabetes diagnosis",
+    "BPMEDS":   "Blood pressure medication",
+    "HEARTRTE": "Heart rate",
+    "GLUCOSE":  "Blood sugar levels",
+    "educ":     "Education level",
+    "PREVCHD":  "Prior heart disease",
+    "PREVAP":   "Prior angina (chest pain)",
+    "PREVMI":   "Prior heart attack",
+    "PREVSTRK": "Prior stroke",
+    "PREVHYP":  "History of high blood pressure",
+    "HOSPMI":   "Hospitalized for heart attack",
     "HDLC":     "HDL good cholesterol",
     "LDLC":     "LDL bad cholesterol",
-    "HEARTRTE": "Heart rate",
-    "ANGINA":   "Chest pain (angina)",
-    "HOSPMI":   "Hospitalization for heart attack",
+    "ANGINA":   "Current chest pain (angina)",
     "MI_FCHD":  "Family history of heart attack",
+    "STROKE":   "Current stroke diagnosis",
+    "HYPERTEN": "Current hypertension diagnosis",
 }
+
+# Binary (yes/no) features — used to convert 0/1 to No/Yes in patient waterfall
+BINARY_FEATURES = {
+    "DIABETES", "BPMEDS", "PREVCHD", "PREVAP", "PREVMI", "PREVSTRK",
+    "PREVHYP", "HOSPMI", "ANGINA", "MI_FCHD", "STROKE", "HYPERTEN",
+}
+# Sex maps: 1=Male, 2=Female in this dataset encoding
+SEX_MAP = {1.0: "Male", 2.0: "Female", 0.0: "Female"}
 
 # =========================
 # 4) HELPERS
@@ -241,8 +253,12 @@ def _shap_legend(is_patient: bool = False):
         blue_neg   = "**Blue bar (left of centre)** — This factor is *lowering* your risk below the baseline"
         bar_width  = "**Bar width** — The wider the bar, the stronger the impact of that factor"
         value_note = "**Number on left (e.g. '1 = DIABETES')** — Your actual value for that factor"
-        footer     = ("⚠️ These associations come from the AI model — they reflect statistical patterns "
-                      "in the training data, not medical causation. Always discuss results with your doctor.")
+        footer     = ("⚠️ Important: A factor labelled \"No\" can still show a red (risk-raising) bar. "
+                      "This happens when the AI compares you to the average patient in its training data — "
+                      "not to a perfect-health benchmark. For example, if most training patients with "
+                      "your age and diabetes profile also had no family history, the model may still "
+                      "associate that combination with above-average risk. "
+                      "These are statistical patterns, not medical diagnoses. Always discuss with your doctor.")
     else:
         fx_label   = "**f(x)** — This model's predicted CVD probability for this patient"
         efx_label  = "**E[f(X)]** — Population baseline: average predicted probability across all training patients"
@@ -752,7 +768,26 @@ with tab_calc:
                 X_raw_pt    = df_input.values.astype(float)
                 X_scaled_pt = scaler.transform(X_raw_pt)
 
-                friendly_names = [SHAP_FRIENDLY.get(f, f) for f in FEATURES_24]
+                # Build patient-friendly feature names with Yes/No values
+                # e.g. "Family history of heart attack: No" instead of "0 = MI_FCHD"
+                # This prevents confusion when a "No" feature shows a positive SHAP bar.
+                raw_vals_for_labels = np.ravel(X_raw_pt[0])
+                friendly_names = []
+                for i, feat in enumerate(FEATURES_24):
+                    label = SHAP_FRIENDLY.get(feat, feat)
+                    val   = raw_vals_for_labels[i]
+                    if feat in BINARY_FEATURES:
+                        val_str = "Yes" if val >= 1 else "No"
+                    elif feat == "SEX":
+                        val_str = SEX_MAP.get(val, str(int(val)))
+                    elif feat == "educ":
+                        educ_map = {1:"Some HS", 2:"HS grad", 3:"Some college", 4:"College grad"}
+                        val_str = educ_map.get(int(val), str(int(val)))
+                    elif val == int(val):
+                        val_str = str(int(val))
+                    else:
+                        val_str = f"{val:.1f}"
+                    friendly_names.append(f"{label}: {val_str}")
 
                 # ── Compute SHAP values for BOTH base models ──────────────────
                 def _extract_shap_1d(explainer, X_scaled):
