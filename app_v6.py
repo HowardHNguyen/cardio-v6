@@ -46,6 +46,7 @@ ARTIFACTS = {
     "xgb":    Path("xgb_clin24.pkl"),
     "meta":   Path("stack_meta_clin24.pkl"),
     "features": Path("features_24.json"),
+    "data":     Path("frmgham2.csv"),
 }
 
 @st.cache_resource
@@ -63,9 +64,28 @@ def load_artifacts():
     if not isinstance(features_24, list) or len(features_24) != 24:
         st.error("features_24.json must be a JSON list of exactly 24 feature names.")
         st.stop()
-    return scaler, rf_model, xgb_model, meta_model, features_24
 
-scaler, rf_model, xgb_model, meta_model, FEATURES_24 = load_artifacts()
+    # Load a stratified background sample from training data for SHAP.
+    # This forces XGBoost TreeExplainer to compute interventional SHAP values
+    # in probability space rather than log-odds, fixing f(x) display.
+    bg_data = None
+    if ARTIFACTS["data"].exists():
+        try:
+            df_bg = pd.read_csv(ARTIFACTS["data"])
+            # Keep only the 24 model features, drop rows with NaNs
+            feat_cols = [c for c in features_24 if c in df_bg.columns]
+            if len(feat_cols) == 24:
+                df_bg = df_bg[feat_cols].dropna()
+                # Use up to 100 representative background rows (shap recommendation)
+                n_bg = min(100, len(df_bg))
+                df_bg = df_bg.sample(n=n_bg, random_state=42)
+                bg_data = scaler.transform(df_bg.values.astype(float))
+        except Exception:
+            bg_data = None
+
+    return scaler, rf_model, xgb_model, meta_model, features_24, bg_data
+
+scaler, rf_model, xgb_model, meta_model, FEATURES_24, BG_DATA = load_artifacts()
 
 # =========================
 # 3) PLAIN-LANGUAGE LABELS
@@ -184,18 +204,25 @@ def bie_scenarios_24(df_patient: pd.DataFrame, threshold: float, include_advance
 def _get_shap_explainers():
     if not SHAP_AVAILABLE: return None, None
     if "rf_explainer" not in st.session_state:
-        # RF outputs probability natively
-        st.session_state["rf_explainer"] = shap.TreeExplainer(
-            rf_model, model_output="probability"
-        )
-        # XGB internal output is log-odds by default; force probability so
-        # f(x) and E[f(X)] render as probabilities matching the stacking model
-        try:
+        # RF: background data improves SHAP accuracy but isn't required for
+        # probability output — RF TreeExplainer already works in prob space
+        rf_kwargs = {"model_output": "probability"}
+        if BG_DATA is not None:
+            rf_kwargs["data"] = BG_DATA
+        st.session_state["rf_explainer"] = shap.TreeExplainer(rf_model, **rf_kwargs)
+
+        # XGB: passing background data is the ONLY reliable way to get SHAP
+        # values in probability space for XGBoost across all library versions.
+        # Without it, TreeExplainer uses the tree-path method which returns
+        # log-odds values (causing f(x) = -1.517 instead of 0.18).
+        if BG_DATA is not None:
             st.session_state["xgb_explainer"] = shap.TreeExplainer(
-                xgb_model, model_output="probability"
+                xgb_model,
+                data=BG_DATA,
+                model_output="probability",
             )
-        except Exception:
-            # Fallback: some XGB versions do not support probability output
+        else:
+            # No training data available — use log-odds with fallback conversion
             st.session_state["xgb_explainer"] = shap.TreeExplainer(xgb_model)
     return st.session_state["rf_explainer"], st.session_state["xgb_explainer"]
 
@@ -249,11 +276,21 @@ def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
     else:
         base_val = float(ev)
 
-    # If XGB returned log-odds (outside [0,1]), convert to probability space
-    if not (0.0 <= base_val <= 1.0):
+    # Detect log-odds space in two ways:
+    # (a) base_val outside [0,1] — obvious log-odds (e.g. -1.5, 2.3)
+    # (b) f(x) = base_val + sum(shap_vals) is outside [0,1] — subtler case
+    #     where base looks like a prob (e.g. 0.207) but shap values are still
+    #     in log-odds scale (e.g. -1.22, +0.52) giving f(x) = -1.517
+    predicted_fx = base_val + float(np.sum(shap_vals_1d))
+    is_log_odds = (not (0.0 <= base_val <= 1.0)) or (not (0.0 <= predicted_fx <= 1.0))
+
+    if is_log_odds:
+        # Convert base value to probability via sigmoid
         base_val = float(1.0 / (1.0 + np.exp(-base_val)))
-        p0 = base_val * (1.0 - base_val)   # d(sigmoid)/d(log-odds) at base
-        shap_vals_1d = shap_vals_1d * p0    # approximate probability-space values
+        # Scale SHAP values from log-odds to approximate probability space
+        # using the first-order delta method: dP/d(logit) = P(1-P)
+        p0 = base_val * (1.0 - base_val)
+        shap_vals_1d = shap_vals_1d * p0
 
     explanation = shap.Explanation(
         values        = shap_vals_1d,
