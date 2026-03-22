@@ -184,8 +184,19 @@ def bie_scenarios_24(df_patient: pd.DataFrame, threshold: float, include_advance
 def _get_shap_explainers():
     if not SHAP_AVAILABLE: return None, None
     if "rf_explainer" not in st.session_state:
-        st.session_state["rf_explainer"]  = shap.TreeExplainer(rf_model)
-        st.session_state["xgb_explainer"] = shap.TreeExplainer(xgb_model)
+        # RF outputs probability natively
+        st.session_state["rf_explainer"] = shap.TreeExplainer(
+            rf_model, model_output="probability"
+        )
+        # XGB internal output is log-odds by default; force probability so
+        # f(x) and E[f(X)] render as probabilities matching the stacking model
+        try:
+            st.session_state["xgb_explainer"] = shap.TreeExplainer(
+                xgb_model, model_output="probability"
+            )
+        except Exception:
+            # Fallback: some XGB versions do not support probability output
+            st.session_state["xgb_explainer"] = shap.TreeExplainer(xgb_model)
     return st.session_state["rf_explainer"], st.session_state["xgb_explainer"]
 
 def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
@@ -231,28 +242,32 @@ def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
         st.warning("Feature name / SHAP value length mismatch. Skipping waterfall.")
         return
 
-    # ── 2. Build shap.Explanation object ────────────────────────────────────
-    base_val = float(explainer.expected_value[1]) \
-               if isinstance(explainer.expected_value, (list, np.ndarray)) \
-               else float(explainer.expected_value)
+    # ── 2. Extract base value safely (RF list vs XGB scalar/array) ─────────
+    ev = explainer.expected_value
+    if isinstance(ev, (list, np.ndarray)):
+        base_val = float(ev[1]) if len(ev) > 1 else float(ev[0])
+    else:
+        base_val = float(ev)
+
+    # If XGB returned log-odds (outside [0,1]), convert to probability space
+    if not (0.0 <= base_val <= 1.0):
+        base_val = float(1.0 / (1.0 + np.exp(-base_val)))
+        p0 = base_val * (1.0 - base_val)   # d(sigmoid)/d(log-odds) at base
+        shap_vals_1d = shap_vals_1d * p0    # approximate probability-space values
 
     explanation = shap.Explanation(
-        values       = shap_vals_1d,
-        base_values  = base_val,
-        data         = raw_vals_1d,
-        feature_names= feature_names,
+        values        = shap_vals_1d,
+        base_values   = base_val,
+        data          = raw_vals_1d,
+        feature_names = feature_names,
     )
 
     # ── 3. Plot ──────────────────────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(9, max(5, max_display * 0.42)))
-
-    # shap.plots.waterfall draws onto the current figure
+    fig, ax = plt.subplots(figsize=(9, max(5, max_display * 0.45)))
     shap.plots.waterfall(explanation, max_display=max_display, show=False)
-
-    # Style tweaks to match CVDStack's clean aesthetic
     fig = plt.gcf()
     fig.suptitle(title, fontsize=11, fontweight="bold",
-                 color="#0f4c75", y=1.01)
+                 color="#0f4c75", y=1.02)
     plt.tight_layout()
     st.pyplot(fig, clear_figure=True)
 
