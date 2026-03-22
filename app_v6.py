@@ -226,6 +226,54 @@ def _get_shap_explainers():
             st.session_state["xgb_explainer"] = shap.TreeExplainer(xgb_model)
     return st.session_state["rf_explainer"], st.session_state["xgb_explainer"]
 
+
+def _shap_legend(is_patient: bool = False):
+    """
+    Render a colour-coded legend + symbol guide below a SHAP waterfall plot.
+    Call immediately after _shap_waterfall().
+    """
+    if is_patient:
+        fx_label   = "**f(x)** — Your personal predicted risk score (shown at the top of the chart)"
+        efx_label  = "**E[f(X)]** — The average risk score across all patients in the training data (the starting baseline)"
+        red_pos    = "**Red bar (right of centre)** — This factor is *raising* your risk above the baseline"
+        red_neg    = "**Red bar (left of centre, labelled in red)** — A smaller red bar pulling toward baseline"
+        blue_pos   = "**Blue bar (right of centre, labelled in blue)** — A smaller blue bar pushing toward baseline"
+        blue_neg   = "**Blue bar (left of centre)** — This factor is *lowering* your risk below the baseline"
+        bar_width  = "**Bar width** — The wider the bar, the stronger the impact of that factor"
+        value_note = "**Number on left (e.g. '1 = DIABETES')** — Your actual value for that factor"
+        footer     = ("⚠️ These associations come from the AI model — they reflect statistical patterns "
+                      "in the training data, not medical causation. Always discuss results with your doctor.")
+    else:
+        fx_label   = "**f(x)** — This model's predicted CVD probability for this patient"
+        efx_label  = "**E[f(X)]** — Population baseline: average predicted probability across all training patients"
+        red_pos    = "**Red bar →** — Feature pushes prediction *above* baseline (risk-increasing)"
+        red_neg    = "**Red label, small bar** — Small positive contribution"
+        blue_pos   = "**Blue label, small bar** — Small negative contribution"
+        blue_neg   = "**Blue bar ←** — Feature pushes prediction *below* baseline (risk-reducing)"
+        bar_width  = "**Bar magnitude** — Proportional to absolute SHAP value; wider = stronger influence"
+        value_note = "**Left-side annotation (e.g. '110 = GLUCOSE')** — Patient's actual feature value"
+        footer     = ("Note: SHAP values reflect the base model's learned associations, not causal treatment "
+                      "effects. The stacked meta-learner combines RF and XGB outputs; individual waterfall "
+                      "f(x) values may differ from the final stacked prediction shown above.")
+
+    st.markdown(
+        f"""
+<div style="background:#f8f8f6;border:0.5px solid #d3d1c7;border-radius:10px;
+            padding:14px 18px;margin-top:12px;font-size:13px;line-height:1.8">
+<strong style="font-size:13px;color:#0f4c75">How to read this chart</strong><br><br>
+{fx_label}<br>
+{efx_label}<br><br>
+<span style="color:#d85a30">{'■'}</span> {red_pos}<br>
+<span style="color:#378add">{'■'}</span> {blue_neg}<br>
+{bar_width}<br>
+{value_note}<br><br>
+<em style="color:#888780;font-size:12px">{footer}</em>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
                     title: str, max_display: int = 12,
                     model_prob: float = None):
@@ -691,10 +739,10 @@ with tab_calc:
         if IS_PATIENT_MODE:
             st.markdown("---")
             st.markdown("### What's driving your score?")
-            st.caption(
-                "The chart below shows which of your health values pushed your risk "
-                "score up (red) or down (blue) compared to the average patient. "
-                "These are model-based associations — not diagnoses."
+            st.markdown(
+                "The chart below is an AI explanation of your result. It shows which of your "
+                "health factors pushed your risk **above** or **below** the average person's risk — "
+                "and by how much. This helps you understand *why* the model scored you the way it did."
             )
             if SHAP_AVAILABLE:
                 _, xgb_exp = _get_shap_explainers()
@@ -709,15 +757,11 @@ with tab_calc:
                 _shap_waterfall(
                     xgb_exp, X_scaled_pt, X_raw_pt,
                     friendly_names,
-                    "Your personal risk drivers (XGBoost model)",
+                    "Your personal risk drivers",
                     max_display=24,
                     model_prob=_p_xgb_pt,
                 )
-                st.caption(
-                    "E[f(X)] = average risk across all patients in the training dataset. "
-                    "f(x) = your individual predicted risk. "
-                    "Each bar shows how much one factor moved your score."
-                )
+                _shap_legend(is_patient=True)
             else:
                 st.info("Install `shap` and `matplotlib` to enable the waterfall explanation.")
 
@@ -732,7 +776,14 @@ with tab_calc:
 
         if show_shap:
             with st.expander("Local SHAP explanation — base model drivers", expanded=False):
-                st.caption("SHAP shows which features pushed RF and XGB predictions up or down for this patient.")
+                st.markdown(
+                    "SHAP (SHapley Additive exPlanations) shows **why** each base model "
+                    "scored this patient the way it did — which features pushed the predicted "
+                    "risk up or down, and by how much. Two waterfall charts are shown: one for "
+                    "the Random Forest (RF) base model and one for XGBoost (XGB). The final "
+                    f"stacked prediction of **{final_prob*100:.1f}%** is produced by a "
+                    "Logistic Regression meta-learner that combines both base model outputs."
+                )
                 if not SHAP_AVAILABLE:
                     st.info("Add shap + matplotlib to requirements.txt to enable.")
                 else:
@@ -744,27 +795,35 @@ with tab_calc:
                     _p_rf  = float(rf_model.predict_proba(X_scaled)[:, 1][0])
                     _p_xgb = float(xgb_model.predict_proba(X_scaled)[:, 1][0])
 
-                    st.markdown("**Random Forest — SHAP waterfall**")
-                    st.caption(
-                        f"RF base model prediction: **{_p_rf*100:.1f}%**. "
-                        "Red bars push risk above the population baseline (E[f(X)]). "
-                        "Blue bars push it lower. The stacked model combines RF + XGB "
-                        "via a meta-learner, so the final risk % may differ from either base model."
+                    # ── RF waterfall ──
+                    st.markdown("#### Random Forest (RF) — SHAP waterfall")
+                    st.markdown(
+                        f"The RF base model predicts a **{_p_rf*100:.1f}% CVD risk** for this patient. "
+                        f"The population baseline (average across all training patients) is shown as "
+                        f"**E[f(X)]** on the x-axis. Each feature bar shows how much that feature "
+                        f"shifted the prediction away from this baseline — red bars increase risk, "
+                        f"blue bars decrease it. Features are ranked top-to-bottom by impact magnitude."
                     )
                     _shap_waterfall(rf_exp, X_scaled, X_raw, FEATURES_24,
                                     "RF: Local SHAP waterfall", max_display=24,
                                     model_prob=_p_rf)
+                    _shap_legend(is_patient=False)
+
                     st.markdown("---")
-                    st.markdown("**XGBoost — SHAP waterfall**")
-                    st.caption(
-                        f"XGB base model prediction: **{_p_xgb*100:.1f}%**. "
-                        "Same interpretation as above for the XGBoost base learner. "
-                        f"Final stacked prediction: **{final_prob*100:.1f}%** "
-                        "(meta-learner output combining RF + XGB)."
+
+                    # ── XGB waterfall ──
+                    st.markdown("#### XGBoost (XGB) — SHAP waterfall")
+                    st.markdown(
+                        f"The XGB base model predicts a **{_p_xgb*100:.1f}% CVD risk** for this patient. "
+                        f"The meta-learner then combines the RF ({_p_rf*100:.1f}%) and XGB "
+                        f"({_p_xgb*100:.1f}%) outputs to produce the final stacked prediction of "
+                        f"**{final_prob*100:.1f}%**. Differences between RF and XGB waterfalls "
+                        f"reflect each model's unique learned associations — both are informative."
                     )
                     _shap_waterfall(xgb_exp, X_scaled, X_raw, FEATURES_24,
                                     "XGB: Local SHAP waterfall", max_display=24,
                                     model_prob=_p_xgb)
+                    _shap_legend(is_patient=False)
 
         st.info("💡 Open the **My Risk Over Time** tab to track changes across visits.")
 
