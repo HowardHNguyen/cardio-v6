@@ -740,27 +740,93 @@ with tab_calc:
             st.markdown("---")
             st.markdown("### What's driving your score?")
             st.markdown(
-                "The chart below is an AI explanation of your result. It shows which of your "
-                "health factors pushed your risk **above** or **below** the average person's risk — "
-                "and by how much. This helps you understand *why* the model scored you the way it did."
+                f"Your final risk score is **{final_prob*100:.1f}%**. "
+                "The chart below explains how the AI arrived at this number. "
+                "It combines insights from two AI models (Random Forest and XGBoost) "
+                "to show which of your health factors pushed your risk **above** or **below** "
+                "the average person's risk — and by how much. "
+                "The bars reflect the combined model's reasoning, anchored to your actual score."
             )
             if SHAP_AVAILABLE:
-                _, xgb_exp = _get_shap_explainers()
+                rf_exp_pt, xgb_exp_pt = _get_shap_explainers()
                 X_raw_pt    = df_input.values.astype(float)
                 X_scaled_pt = scaler.transform(X_raw_pt)
 
-                # Use friendly names for patient-facing waterfall
-                friendly_names = [
-                    SHAP_FRIENDLY.get(f, f) for f in FEATURES_24
-                ]
+                friendly_names = [SHAP_FRIENDLY.get(f, f) for f in FEATURES_24]
+
+                # ── Compute SHAP values for BOTH base models ──────────────────
+                def _extract_shap_1d(explainer, X_scaled):
+                    sv = explainer.shap_values(X_scaled)
+                    if isinstance(sv, list) and len(sv) == 2:
+                        sv = sv[1]
+                    if hasattr(sv, "values"):
+                        sv = sv.values
+                    sv = np.array(sv)
+                    if sv.ndim == 3 and sv.shape[-1] == 2:
+                        sv = sv[:, :, 1]
+                    return np.ravel(sv[0]) if sv.ndim == 2 else np.ravel(sv)
+
+                sv_rf_pt  = _extract_shap_1d(rf_exp_pt,  X_scaled_pt)
+                sv_xgb_pt = _extract_shap_1d(xgb_exp_pt, X_scaled_pt)
+
+                # ── Normalise each to probability space ───────────────────────
+                def _norm_to_prob(shap_vals, ev_raw, true_prob):
+                    ev = ev_raw
+                    if isinstance(ev, (list, np.ndarray)):
+                        ev = float(ev[1]) if len(ev) > 1 else float(ev[0])
+                    else:
+                        ev = float(ev)
+                    raw_fx = ev + float(np.sum(shap_vals))
+                    if not (0.0 <= ev <= 1.0) or not (0.0 <= raw_fx <= 1.0):
+                        ev = float(1.0 / (1.0 + np.exp(-ev)))
+                        shap_vals = shap_vals * ev * (1.0 - ev)
+                    # Anchor to true_prob
+                    s = float(np.sum(shap_vals))
+                    if abs(s) > 1e-10:
+                        shap_vals = shap_vals * ((true_prob - ev) / s)
+                    return shap_vals, ev
+
+                _p_rf_pt  = float(rf_model.predict_proba(X_scaled_pt)[:, 1][0])
                 _p_xgb_pt = float(xgb_model.predict_proba(X_scaled_pt)[:, 1][0])
-                _shap_waterfall(
-                    xgb_exp, X_scaled_pt, X_raw_pt,
-                    friendly_names,
-                    "Your personal risk drivers",
-                    max_display=24,
-                    model_prob=_p_xgb_pt,
+
+                sv_rf_norm,  base_rf  = _norm_to_prob(sv_rf_pt,  rf_exp_pt.expected_value,  _p_rf_pt)
+                sv_xgb_norm, base_xgb = _norm_to_prob(sv_xgb_pt, xgb_exp_pt.expected_value, _p_xgb_pt)
+
+                # ── Average SHAP values and base → anchored to final_prob ─────
+                # The meta-learner gives more weight to whichever base model is
+                # more informative; simple averaging is the best patient-facing
+                # approximation without exposing meta-learner internals.
+                sv_avg   = (sv_rf_norm + sv_xgb_norm) / 2.0
+                base_avg = (base_rf   + base_xgb)    / 2.0
+
+                # Re-anchor sum to final stacked prediction
+                s_avg = float(np.sum(sv_avg))
+                if abs(s_avg) > 1e-10:
+                    sv_avg = sv_avg * ((final_prob - base_avg) / s_avg)
+
+                # ── Build Explanation and plot ────────────────────────────────
+                import shap as _shap_mod
+                explanation_pt = _shap_mod.Explanation(
+                    values        = sv_avg,
+                    base_values   = base_avg,
+                    data          = np.ravel(X_raw_pt[0]),
+                    feature_names = friendly_names,
                 )
+
+                sorted_abs   = np.sort(np.abs(sv_avg))[::-1]
+                meaningful   = int(np.sum(sorted_abs >= 0.005))
+                effective_max= max(5, min(24, meaningful))
+
+                fig, _ = plt.subplots(figsize=(9, max(6, effective_max * 0.52)))
+                _shap_mod.plots.waterfall(explanation_pt,
+                                          max_display=effective_max, show=False)
+                fig = plt.gcf()
+                fig.suptitle("Your personal risk drivers (combined model)",
+                             fontsize=11, fontweight="bold",
+                             color="#0f4c75", y=1.02)
+                plt.tight_layout()
+                fig.subplots_adjust(bottom=0.12)
+                st.pyplot(fig, clear_figure=True)
                 _shap_legend(is_patient=True)
             else:
                 st.info("Install `shap` and `matplotlib` to enable the waterfall explanation.")
