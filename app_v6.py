@@ -154,6 +154,36 @@ BINARY_FEATURES = {
 # Sex maps: 1=Male, 2=Female in this dataset encoding
 SEX_MAP = {1.0: "Male", 2.0: "Female", 0.0: "Female"}
 
+
+# ── Reference healthy values for clinical risk contribution chart ──────────
+# For each feature, this is the "healthy baseline" used to compute
+# how much each factor contributes to THIS patient's risk above baseline.
+HEALTHY_REF = {
+    "SEX":      None,   # keep patient's own sex (not modifiable)
+    "TOTCHOL":  180.0,  # desirable total cholesterol
+    "AGE":      None,   # keep patient's own age (not modifiable)
+    "SYSBP":    115.0,  # optimal systolic BP
+    "DIABP":    75.0,   # optimal diastolic BP
+    "CIGPDAY":  0.0,    # non-smoker
+    "BMI":      22.0,   # healthy BMI midpoint
+    "DIABETES": 0.0,    # no diabetes
+    "BPMEDS":   0.0,    # no BP meds needed
+    "HEARTRTE": 65.0,   # healthy resting heart rate
+    "GLUCOSE":  85.0,   # optimal fasting glucose
+    "educ":     None,   # keep patient's own education
+    "PREVCHD":  0.0,    # no prior heart disease
+    "PREVAP":   0.0,
+    "PREVMI":   0.0,
+    "PREVSTRK": 0.0,
+    "PREVHYP":  0.0,
+    "HOSPMI":   0.0,
+    "HDLC":     60.0,   # optimal HDL (higher is better)
+    "LDLC":     70.0,   # optimal LDL
+    "ANGINA":   0.0,
+    "MI_FCHD":  0.0,
+    "STROKE":   0.0,
+    "HYPERTEN": 0.0,
+}
 # =========================
 # 4) HELPERS
 # =========================
@@ -756,115 +786,116 @@ with tab_calc:
             st.markdown("---")
             st.markdown("### What's driving your score?")
             st.markdown(
-                f"Your final risk score is **{final_prob*100:.1f}%**. "
-                "The chart below explains how the AI arrived at this number. "
-                "It combines insights from two AI models (Random Forest and XGBoost) "
-                "to show which of your health factors pushed your risk **above** or **below** "
-                "the average person's risk — and by how much. "
-                "The bars reflect the combined model's reasoning, anchored to your actual score."
+                f"Your current 10-year heart disease risk is **{final_prob*100:.1f}%**. "
+                "The chart below shows which of your health factors are contributing most to that risk, "
+                "and — importantly — which ones you may be able to improve. "
+                "Each bar shows how much that factor is estimated to be adding to your personal risk score."
             )
-            if SHAP_AVAILABLE:
-                rf_exp_pt, xgb_exp_pt = _get_shap_explainers()
-                X_raw_pt    = df_input.values.astype(float)
-                X_scaled_pt = scaler.transform(X_raw_pt)
 
-                # Build patient-friendly feature names with Yes/No values
-                # e.g. "Family history of heart attack: No" instead of "0 = MI_FCHD"
-                # This prevents confusion when a "No" feature shows a positive SHAP bar.
-                raw_vals_for_labels = np.ravel(X_raw_pt[0])
-                friendly_names = []
-                for i, feat in enumerate(FEATURES_24):
+            # ── Clinical Risk Contribution Chart (BIE-based counterfactual) ──
+            # For each feature, we ask: "what would the risk be if this factor
+            # were at the healthy reference level?"  The difference = contribution.
+            # This is intuitive for patients: every bar is positive and means
+            # "this factor is adding X% to your risk."  No baseline confusion.
+            contributions = []
+            row_dict = df_input.iloc[0].to_dict()
+
+            for feat in FEATURES_24:
+                ref_val = HEALTHY_REF.get(feat)
+                if ref_val is None:
+                    continue   # skip non-modifiable (age, sex, education)
+                patient_val = float(row_dict[feat])
+                if abs(patient_val - ref_val) < 0.01:
+                    continue   # already at healthy reference, no contribution
+
+                # Build counterfactual row with this feature set to healthy ref
+                cf_row = row_dict.copy()
+                cf_row[feat] = ref_val
+                cf_df = pd.DataFrame([{f: cf_row[f] for f in FEATURES_24}])
+                cf_prob, _, _ = stacking_predict_proba_24(cf_df, threshold=threshold)
+
+                contribution_pp = (final_prob - cf_prob) * 100.0
+                if contribution_pp > 0.05:   # only show factors that meaningfully raise risk
                     label = SHAP_FRIENDLY.get(feat, feat)
-                    val   = raw_vals_for_labels[i]
                     if feat in BINARY_FEATURES:
-                        val_str = "Yes" if val >= 1 else "No"
-                    elif feat == "SEX":
-                        val_str = SEX_MAP.get(val, str(int(val)))
-                    elif feat == "educ":
-                        educ_map = {1:"Some HS", 2:"HS grad", 3:"Some college", 4:"College grad"}
-                        val_str = educ_map.get(int(val), str(int(val)))
-                    elif val == int(val):
-                        val_str = str(int(val))
+                        val_str = "Yes" if patient_val >= 1 else "No"
+                    elif patient_val == int(patient_val):
+                        val_str = str(int(patient_val))
                     else:
-                        val_str = f"{val:.1f}"
-                    friendly_names.append(f"{label}: {val_str}")
+                        val_str = f"{patient_val:.1f}"
+                    contributions.append({
+                        "feature":   feat,
+                        "label":     label,
+                        "value":     val_str,
+                        "contrib_pp": contribution_pp,
+                        "modifiable": feat not in {"PREVCHD","PREVMI","PREVSTRK",
+                                                    "HOSPMI","MI_FCHD","PREVAP",
+                                                    "PREVHYP","HYPERTEN","STROKE",
+                                                    "ANGINA","PREVSTRK"},
+                    })
 
-                # ── Compute SHAP values for BOTH base models ──────────────────
-                def _extract_shap_1d(explainer, X_scaled):
-                    sv = explainer.shap_values(X_scaled)
-                    if isinstance(sv, list) and len(sv) == 2:
-                        sv = sv[1]
-                    if hasattr(sv, "values"):
-                        sv = sv.values
-                    sv = np.array(sv)
-                    if sv.ndim == 3 and sv.shape[-1] == 2:
-                        sv = sv[:, :, 1]
-                    return np.ravel(sv[0]) if sv.ndim == 2 else np.ravel(sv)
+            if contributions:
+                contributions.sort(key=lambda x: x["contrib_pp"], reverse=True)
+                top = contributions[:12]   # show top 12 contributors
 
-                sv_rf_pt  = _extract_shap_1d(rf_exp_pt,  X_scaled_pt)
-                sv_xgb_pt = _extract_shap_1d(xgb_exp_pt, X_scaled_pt)
+                labels   = [f"{c['label']}: {c['value']}" for c in top]
+                values   = [c["contrib_pp"] for c in top]
+                colors   = ["#D85A30" if c["modifiable"] else "#888780" for c in top]
 
-                # ── Normalise each to probability space ───────────────────────
-                def _norm_to_prob(shap_vals, ev_raw, true_prob):
-                    ev = ev_raw
-                    if isinstance(ev, (list, np.ndarray)):
-                        ev = float(ev[1]) if len(ev) > 1 else float(ev[0])
-                    else:
-                        ev = float(ev)
-                    raw_fx = ev + float(np.sum(shap_vals))
-                    if not (0.0 <= ev <= 1.0) or not (0.0 <= raw_fx <= 1.0):
-                        ev = float(1.0 / (1.0 + np.exp(-ev)))
-                        shap_vals = shap_vals * ev * (1.0 - ev)
-                    # Anchor to true_prob
-                    s = float(np.sum(shap_vals))
-                    if abs(s) > 1e-10:
-                        shap_vals = shap_vals * ((true_prob - ev) / s)
-                    return shap_vals, ev
+                fig, ax = plt.subplots(figsize=(9, max(5, len(top) * 0.52)))
+                bars = ax.barh(range(len(top))[::-1], values, color=colors,
+                               height=0.6, edgecolor="none")
 
-                _p_rf_pt  = float(rf_model.predict_proba(X_scaled_pt)[:, 1][0])
-                _p_xgb_pt = float(xgb_model.predict_proba(X_scaled_pt)[:, 1][0])
+                # Value labels on bars
+                for i, (bar, val) in enumerate(zip(bars, values)):
+                    ax.text(bar.get_width() + 0.1, bar.get_y() + bar.get_height()/2,
+                            f"+{val:.1f} pp", va="center", ha="left",
+                            fontsize=10, color="#444441", fontweight="500")
 
-                sv_rf_norm,  base_rf  = _norm_to_prob(sv_rf_pt,  rf_exp_pt.expected_value,  _p_rf_pt)
-                sv_xgb_norm, base_xgb = _norm_to_prob(sv_xgb_pt, xgb_exp_pt.expected_value, _p_xgb_pt)
-
-                # ── Average SHAP values and base → anchored to final_prob ─────
-                # The meta-learner gives more weight to whichever base model is
-                # more informative; simple averaging is the best patient-facing
-                # approximation without exposing meta-learner internals.
-                sv_avg   = (sv_rf_norm + sv_xgb_norm) / 2.0
-                base_avg = (base_rf   + base_xgb)    / 2.0
-
-                # Re-anchor sum to final stacked prediction
-                s_avg = float(np.sum(sv_avg))
-                if abs(s_avg) > 1e-10:
-                    sv_avg = sv_avg * ((final_prob - base_avg) / s_avg)
-
-                # ── Build Explanation and plot ────────────────────────────────
-                import shap as _shap_mod
-                explanation_pt = _shap_mod.Explanation(
-                    values        = sv_avg,
-                    base_values   = base_avg,
-                    data          = np.ravel(X_raw_pt[0]),
-                    feature_names = friendly_names,
-                )
-
-                sorted_abs   = np.sort(np.abs(sv_avg))[::-1]
-                meaningful   = int(np.sum(sorted_abs >= 0.005))
-                effective_max= max(5, min(24, meaningful))
-
-                fig, _ = plt.subplots(figsize=(9, max(6, effective_max * 0.52)))
-                _shap_mod.plots.waterfall(explanation_pt,
-                                          max_display=effective_max, show=False)
-                fig = plt.gcf()
-                fig.suptitle("Your personal risk drivers (combined model)",
-                             fontsize=11, fontweight="bold",
-                             color="#0f4c75", y=1.02)
+                ax.set_yticks(range(len(top))[::-1])
+                ax.set_yticklabels(labels, fontsize=10)
+                ax.set_xlabel("Estimated contribution to your risk (percentage points)", fontsize=10)
+                ax.set_title(f"Your personal risk factors — contributing to your {final_prob*100:.1f}% score",
+                             fontsize=11, fontweight="bold", color="#0f4c75", pad=12)
+                ax.axvline(0, color="#d3d1c7", linewidth=0.8)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                ax.spines["left"].set_visible(False)
+                ax.set_xlim(0, max(values) * 1.28)
                 plt.tight_layout()
-                fig.subplots_adjust(bottom=0.12)
                 st.pyplot(fig, clear_figure=True)
-                _shap_legend(is_patient=True)
+
+                # Legend
+                st.markdown(
+                    """
+<div style="background:#f8f8f6;border:0.5px solid #d3d1c7;border-radius:10px;
+            padding:14px 18px;margin-top:10px;font-size:13px;line-height:1.9">
+<strong style="font-size:13px;color:#0f4c75">How to read this chart</strong><br><br>
+Each bar shows how much that health factor is estimated to be adding to your personal risk score,
+measured in <em>percentage points (pp)</em>.<br><br>
+<span style="display:inline-block;width:12px;height:12px;background:#D85A30;
+      border-radius:2px;vertical-align:middle;margin-right:6px"></span>
+<strong>Orange bar</strong> — a factor you may be able to improve (e.g. blood pressure, cholesterol, smoking, weight)<br>
+<span style="display:inline-block;width:12px;height:12px;background:#888780;
+      border-radius:2px;vertical-align:middle;margin-right:6px"></span>
+<strong>Grey bar</strong> — a factor from your medical history (less directly modifiable, but still important to discuss with your doctor)<br><br>
+<strong>Example:</strong> a bar showing <em>+4.5 pp</em> for "Diabetes: Yes" means the model estimates
+that diabetes is adding approximately 4.5 percentage points to your 10-year risk.<br><br>
+Only factors currently above their healthy reference level are shown.
+Factors already at a healthy level (e.g. you are a non-smoker) are not displayed
+because they are not contributing extra risk.<br><br>
+<em style="color:#888780;font-size:12px">These are model-based estimates from observational data — not a medical diagnosis.
+Always discuss your results with your doctor before making any health decisions.</em>
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
             else:
-                st.info("Install `shap` and `matplotlib` to enable the waterfall explanation.")
+                st.success(
+                    "All of your measurable risk factors are at or near healthy reference levels. "
+                    "Your risk score is driven primarily by factors outside this chart. "
+                    "Continue your current healthy habits and discuss with your doctor."
+                )
 
         # Clinician components + SHAP
         if show_components:
