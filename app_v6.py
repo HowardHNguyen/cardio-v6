@@ -227,21 +227,21 @@ def _get_shap_explainers():
     return st.session_state["rf_explainer"], st.session_state["xgb_explainer"]
 
 def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
-                    title: str, max_display: int = 12):
+                    title: str, max_display: int = 12,
+                    model_prob: float = None):
     """
     Render a SHAP waterfall plot for a single patient row.
-    Shows baseline expected value, each feature's directional push
-    (red = raises risk, blue = lowers risk), and the final prediction.
 
     Parameters
     ----------
-    explainer    : shap.TreeExplainer fitted to the model
+    explainer    : shap.TreeExplainer
     X_row_1xF   : scaled feature array, shape (1, n_features)
-    X_row_raw   : unscaled feature array, shape (1, n_features) — used for
-                  feature value annotations on the y-axis
-    feature_names: list of feature name strings (length == n_features)
-    title        : string shown above the plot
-    max_display  : how many features to show (sorted by |SHAP value|)
+    X_row_raw   : unscaled feature array, shape (1, n_features)
+    feature_names: list[str]
+    title        : plot title
+    max_display  : features shown (sorted by |SHAP value|)
+    model_prob   : actual predict_proba output for this row (used to
+                   anchor f(x) so it always matches the model output)
     """
     if not SHAP_AVAILABLE or explainer is None:
         st.info("SHAP not available in this deployment.")
@@ -250,7 +250,6 @@ def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
     # ── 1. Compute raw SHAP values ──────────────────────────────────────────
     sv_raw = explainer.shap_values(X_row_1xF)
 
-    # Normalise to class-1 probability (binary classifiers return a list)
     if isinstance(sv_raw, list) and len(sv_raw) == 2:
         sv_raw = sv_raw[1]
     if hasattr(sv_raw, "values"):
@@ -262,36 +261,44 @@ def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
         st.warning(f"Unexpected SHAP shape: {sv_raw.shape}. Skipping waterfall.")
         return
 
-    shap_vals_1d = np.ravel(sv_raw[0])          # shape (n_features,)
-    raw_vals_1d  = np.ravel(X_row_raw[0])        # shape (n_features,) — actual patient values
+    shap_vals_1d = np.ravel(sv_raw[0])
+    raw_vals_1d  = np.ravel(X_row_raw[0])
 
     if len(feature_names) != len(shap_vals_1d):
-        st.warning("Feature name / SHAP value length mismatch. Skipping waterfall.")
+        st.warning("Feature name / SHAP value length mismatch.")
         return
 
-    # ── 2. Extract base value safely (RF list vs XGB scalar/array) ─────────
+    # ── 2. Determine base value and normalise to probability space ───────────
     ev = explainer.expected_value
     if isinstance(ev, (list, np.ndarray)):
         base_val = float(ev[1]) if len(ev) > 1 else float(ev[0])
     else:
         base_val = float(ev)
 
-    # Detect log-odds space in two ways:
-    # (a) base_val outside [0,1] — obvious log-odds (e.g. -1.5, 2.3)
-    # (b) f(x) = base_val + sum(shap_vals) is outside [0,1] — subtler case
-    #     where base looks like a prob (e.g. 0.207) but shap values are still
-    #     in log-odds scale (e.g. -1.22, +0.52) giving f(x) = -1.517
-    predicted_fx = base_val + float(np.sum(shap_vals_1d))
-    is_log_odds = (not (0.0 <= base_val <= 1.0)) or (not (0.0 <= predicted_fx <= 1.0))
+    # Compute what f(x) would be using raw SHAP: base + sum(shap)
+    raw_fx = base_val + float(np.sum(shap_vals_1d))
+
+    # Detect log-odds space: f(x) outside [0,1] OR base outside [0,1]
+    is_log_odds = not (0.0 <= base_val <= 1.0) or not (0.0 <= raw_fx <= 1.0)
 
     if is_log_odds:
-        # Convert base value to probability via sigmoid
+        # Convert base to probability via sigmoid
         base_val = float(1.0 / (1.0 + np.exp(-base_val)))
-        # Scale SHAP values from log-odds to approximate probability space
-        # using the first-order delta method: dP/d(logit) = P(1-P)
-        p0 = base_val * (1.0 - base_val)
-        shap_vals_1d = shap_vals_1d * p0
+        # Scale SHAP values: first-order delta method dP/d(logit) = P(1-P)
+        scale = base_val * (1.0 - base_val)
+        shap_vals_1d = shap_vals_1d * scale
 
+    # ── 3. Anchor f(x) to the actual model predict_proba output ─────────────
+    # If model_prob is provided, rescale SHAP values so that
+    # base_val + sum(shap_vals) == model_prob exactly.
+    # This ensures the waterfall f(x) label always matches the displayed risk %.
+    if model_prob is not None:
+        shap_sum = float(np.sum(shap_vals_1d))
+        target_sum = float(model_prob) - base_val
+        if abs(shap_sum) > 1e-10:
+            shap_vals_1d = shap_vals_1d * (target_sum / shap_sum)
+
+    # ── 4. Build shap.Explanation and plot ───────────────────────────────────
     explanation = shap.Explanation(
         values        = shap_vals_1d,
         base_values   = base_val,
@@ -299,7 +306,6 @@ def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
         feature_names = feature_names,
     )
 
-    # ── 3. Plot ──────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, max(5, max_display * 0.45)))
     shap.plots.waterfall(explanation, max_display=max_display, show=False)
     fig = plt.gcf()
@@ -690,11 +696,13 @@ with tab_calc:
                 friendly_names = [
                     SHAP_FRIENDLY.get(f, f) for f in FEATURES_24
                 ]
+                _p_xgb_pt = float(xgb_model.predict_proba(X_scaled_pt)[:, 1][0])
                 _shap_waterfall(
                     xgb_exp, X_scaled_pt, X_raw_pt,
                     friendly_names,
                     "Your personal risk drivers (XGBoost model)",
                     max_display=10,
+                    model_prob=_p_xgb_pt,
                 )
                 st.caption(
                     "E[f(X)] = average risk across all patients in the training dataset. "
@@ -722,21 +730,32 @@ with tab_calc:
                     rf_exp, xgb_exp = _get_shap_explainers()
                     X_raw    = df_input.values.astype(float)
                     X_scaled = scaler.transform(X_raw)
+
+                    # Get each base model's individual predict_proba to anchor f(x)
+                    _p_rf  = float(rf_model.predict_proba(X_scaled)[:, 1][0])
+                    _p_xgb = float(xgb_model.predict_proba(X_scaled)[:, 1][0])
+
                     st.markdown("**Random Forest — SHAP waterfall**")
                     st.caption(
-                        "Red bars push the predicted risk higher than the baseline. "
-                        "Blue bars push it lower. Bar width = magnitude of impact. "
-                        "E[f(X)] is the model's average prediction across all training patients."
+                        f"RF base model prediction: **{_p_rf*100:.1f}%**. "
+                        "Red bars push risk above the population baseline (E[f(X)]). "
+                        "Blue bars push it lower. The stacked model combines RF + XGB "
+                        "via a meta-learner, so the final risk % may differ from either base model."
                     )
                     _shap_waterfall(rf_exp, X_scaled, X_raw, FEATURES_24,
-                                    "RF: Local SHAP waterfall", max_display=12)
+                                    "RF: Local SHAP waterfall", max_display=12,
+                                    model_prob=_p_rf)
                     st.markdown("---")
                     st.markdown("**XGBoost — SHAP waterfall**")
                     st.caption(
-                        "Same interpretation as above for the XGBoost base learner."
+                        f"XGB base model prediction: **{_p_xgb*100:.1f}%**. "
+                        "Same interpretation as above for the XGBoost base learner. "
+                        f"Final stacked prediction: **{final_prob*100:.1f}%** "
+                        "(meta-learner output combining RF + XGB)."
                     )
                     _shap_waterfall(xgb_exp, X_scaled, X_raw, FEATURES_24,
-                                    "XGB: Local SHAP waterfall", max_display=12)
+                                    "XGB: Local SHAP waterfall", max_display=12,
+                                    model_prob=_p_xgb)
 
         st.info("💡 Open the **My Risk Over Time** tab to track changes across visits.")
 
