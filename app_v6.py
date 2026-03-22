@@ -1083,67 +1083,373 @@ with tab_trend:
 # TAB 3 – BIE (What-If Simulator)
 # ─────────────────────────────────────────
 with tab_bie:
-    st.subheader("What-If Simulator" if IS_PATIENT_MODE else "Behavioral Impact Engine (BIE)")
-
     if IS_PATIENT_MODE:
+        st.subheader("What-If Simulator")
         st.markdown(
-            "This tool shows how changes in your health — like quitting smoking, lowering your blood pressure, "
-            "or losing weight — might change your estimated risk score. "
-            "**Note:** These are model estimates, not guarantees. Always consult your doctor before making changes."
+            "Use the sliders below to explore how specific lifestyle changes might affect your estimated risk. "
+            "Each slider lets you adjust one health factor — your other values stay the same. "
+            "The chart updates to show your new estimated risk after each change."
         )
+        st.caption("These are model-based estimates, not guarantees. Always consult your doctor before making health changes.")
     else:
+        st.subheader("Behavioral Impact Engine (BIE)")
         st.markdown(
-            "The **BIE** performs local counterfactual re-scoring. In high-risk treated populations, "
-            "lowering measured BP or cholesterol may move the profile toward clusters associated with advanced disease. "
-            "These effects reflect learned associations, not causal treatment effects."
+            "Interactive counterfactual simulator. Adjust individual clinical parameters to observe "
+            "their modelled impact on the stacked CVD risk prediction. "
+            "Results reflect learned associations in the Framingham training data — not causal treatment effects. "
+            "In treated high-risk populations, directional changes may appear counterintuitive due to confounding."
         )
-
-    st.markdown("---")
 
     if "v6_last_input_df" not in st.session_state:
         st.warning("Please run a prediction in **Risk Calculator** first.")
     else:
-        df_patient = st.session_state["v6_last_input_df"]
-        used_threshold = st.session_state.get("v6_last_threshold", threshold)
+        df_patient    = st.session_state["v6_last_input_df"]
+        used_threshold= st.session_state.get("v6_last_threshold", threshold)
+        base_prob, _, _= stacking_predict_proba_24(df_patient, threshold=used_threshold)
+        base_cat, base_color = interpret_risk(base_prob)
 
-        if st.button("▶️ Run What-If Analysis", key="btn_run_bie"):
-            base_prob, scenario_df, best = bie_scenarios_24(
-                df_patient, threshold=used_threshold, include_advanced=not IS_PATIENT_MODE
+        # ── Baseline summary ──────────────────────────────────────────────────
+        col_base1, col_base2, col_base3 = st.columns(3)
+        with col_base1:
+            st.metric("Baseline risk", f"{base_prob*100:.1f}%", help="Your current predicted 10-year CVD risk")
+        with col_base2:
+            st.metric("Risk category", f"{base_color} {base_cat}")
+        with col_base3:
+            st.metric("Alert threshold", f"{used_threshold*100:.0f}%",
+                      delta="Flagged" if base_prob >= used_threshold else "Not flagged",
+                      delta_color="inverse" if base_prob >= used_threshold else "normal")
+
+        st.markdown("---")
+
+        # ── Interactive sliders ───────────────────────────────────────────────
+        if IS_PATIENT_MODE:
+            st.markdown("#### Adjust your health factors")
+            st.markdown("Move any slider to see how that change might affect your risk score.")
+        else:
+            st.markdown("#### Adjust clinical parameters")
+
+        # Get current values
+        cur = df_patient.iloc[0].to_dict()
+
+        col_s1, col_s2 = st.columns(2)
+
+        with col_s1:
+            new_cigs = st.slider(
+                "Cigarettes per day" if IS_PATIENT_MODE else "CIGPDAY",
+                min_value=0, max_value=60,
+                value=int(cur["CIGPDAY"]),
+                step=1,
+                help="Set to 0 to simulate quitting smoking",
+                key="bie_cigs"
             )
-            category, color = interpret_risk(base_prob)
+            new_sysbp = st.slider(
+                "Systolic blood pressure (top number)" if IS_PATIENT_MODE else "SYSBP (mmHg)",
+                min_value=90, max_value=200,
+                value=int(cur["SYSBP"]),
+                step=1,
+                help="Normal is below 120 mmHg",
+                key="bie_sysbp"
+            )
+            new_bmi = st.slider(
+                "Body weight (BMI)" if IS_PATIENT_MODE else "BMI (kg/m²)",
+                min_value=15.0, max_value=50.0,
+                value=float(round(cur["BMI"], 1)),
+                step=0.5,
+                help="Healthy range is 18.5–24.9",
+                key="bie_bmi"
+            )
+            new_totchol = st.slider(
+                "Total cholesterol (mg/dL)" if IS_PATIENT_MODE else "TOTCHOL (mg/dL)",
+                min_value=100, max_value=400,
+                value=int(cur["TOTCHOL"]),
+                step=5,
+                help="Desirable is below 200 mg/dL",
+                key="bie_totchol"
+            )
 
-            st.markdown(f"**Baseline risk:** {base_prob*100:.1f}%  {color} {category}")
-            st.markdown("#### Scenarios")
+        with col_s2:
+            new_glucose = st.slider(
+                "Fasting blood sugar (mg/dL)" if IS_PATIENT_MODE else "GLUCOSE (mg/dL)",
+                min_value=60, max_value=300,
+                value=int(cur["GLUCOSE"]),
+                step=1,
+                help="Normal fasting glucose is 70–99 mg/dL",
+                key="bie_glucose"
+            )
+            new_hdlc = st.slider(
+                "HDL 'good' cholesterol (mg/dL)" if IS_PATIENT_MODE else "HDLC (mg/dL)",
+                min_value=20, max_value=120,
+                value=int(cur["HDLC"]),
+                step=1,
+                help="Higher is better. Goal ≥ 60 mg/dL is protective",
+                key="bie_hdlc"
+            )
+            new_ldlc = st.slider(
+                "LDL 'bad' cholesterol (mg/dL)" if IS_PATIENT_MODE else "LDLC (mg/dL)",
+                min_value=40, max_value=250,
+                value=int(cur["LDLC"]),
+                step=5,
+                help="Lower is better. Optimal is below 100 mg/dL",
+                key="bie_ldlc"
+            )
+            new_hr = st.slider(
+                "Resting heart rate (bpm)" if IS_PATIENT_MODE else "HEARTRTE (bpm)",
+                min_value=40, max_value=140,
+                value=int(cur["HEARTRTE"]),
+                step=1,
+                help="Normal resting heart rate is 60–100 bpm",
+                key="bie_hr"
+            )
 
-            fmt = {"Risk (%)": "{:.2f}", "Change (pp)": "{:+.2f}", "Relative change (%)": "{:+.1f}"}
-            st.dataframe(scenario_df.style.format(fmt), use_container_width=True)
+        # ── Live prediction with slider values ────────────────────────────────
+        df_modified = df_patient.copy()
+        df_modified["CIGPDAY"]  = float(new_cigs)
+        df_modified["SYSBP"]    = float(new_sysbp)
+        df_modified["BMI"]      = float(new_bmi)
+        df_modified["TOTCHOL"]  = float(new_totchol)
+        df_modified["GLUCOSE"]  = float(new_glucose)
+        df_modified["HDLC"]     = float(new_hdlc)
+        df_modified["LDLC"]     = float(new_ldlc)
+        df_modified["HEARTRTE"] = float(new_hr)
 
-            if best:
-                if IS_PATIENT_MODE:
+        new_prob, _, _ = stacking_predict_proba_24(df_modified, threshold=used_threshold)
+        new_cat, new_color = interpret_risk(new_prob)
+        delta_pp  = (new_prob - base_prob) * 100.0
+        delta_rel = (new_prob - base_prob) / base_prob * 100.0 if base_prob > 0 else 0.0
+
+        st.markdown("---")
+
+        # ── Live result display ───────────────────────────────────────────────
+        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        with col_r1:
+            st.metric("Adjusted risk", f"{new_prob*100:.1f}%",
+                      delta=f"{delta_pp:+.1f} pp",
+                      delta_color="inverse")
+        with col_r2:
+            st.metric("New category", f"{new_color} {new_cat}")
+        with col_r3:
+            st.metric("Absolute change", f"{delta_pp:+.1f} pp",
+                      delta_color="inverse")
+        with col_r4:
+            st.metric("Relative change", f"{delta_rel:+.1f}%",
+                      delta_color="inverse")
+
+        # ── Comparison bar chart ──────────────────────────────────────────────
+        if abs(delta_pp) >= 0.1:
+            fig_bie, ax_bie = plt.subplots(figsize=(7, 2.2))
+            bars_data  = [base_prob * 100, new_prob * 100]
+            bar_labels = ["Current profile", "With your changes"]
+            bar_colors = ["#888780", "#D85A30" if new_prob > base_prob else "#1D9E75"]
+            b = ax_bie.barh(bar_labels, bars_data, color=bar_colors,
+                            height=0.45, edgecolor="none")
+            for bar, val in zip(b, bars_data):
+                ax_bie.text(bar.get_width() + 0.3,
+                            bar.get_y() + bar.get_height() / 2,
+                            f"{val:.1f}%", va="center", fontsize=11,
+                            fontweight="500", color="#444441")
+            ax_bie.set_xlim(0, max(bars_data) * 1.22)
+            ax_bie.axvline(used_threshold * 100, color="#E24B4A",
+                           linewidth=1, linestyle="--", alpha=0.7)
+            ax_bie.text(used_threshold * 100 + 0.2, 1.42,
+                        f"Alert threshold ({used_threshold*100:.0f}%)",
+                        fontsize=8, color="#A32D2D", va="center")
+            ax_bie.set_xlabel("10-year CVD risk (%)", fontsize=10)
+            ax_bie.set_title(
+                "Before vs after your adjustments" if IS_PATIENT_MODE
+                else "Counterfactual risk comparison",
+                fontsize=10, fontweight="bold", color="#0f4c75"
+            )
+            ax_bie.spines["top"].set_visible(False)
+            ax_bie.spines["right"].set_visible(False)
+            ax_bie.spines["left"].set_visible(False)
+            plt.tight_layout()
+            st.pyplot(fig_bie, clear_figure=True)
+
+            if IS_PATIENT_MODE:
+                if delta_pp < -0.5:
                     st.success(
-                        f"💡 **Most impactful change for you: {best['name']}**\n\n"
-                        f"This change could lower your estimated risk from **{base_prob*100:.1f}%** "
-                        f"to **{best['p']*100:.1f}%**. Discuss this with your doctor."
+                        f"These changes could lower your estimated risk by **{abs(delta_pp):.1f} percentage points** "
+                        f"— from {base_prob*100:.1f}% down to {new_prob*100:.1f}%. "
+                        "Discuss these targets with your doctor to make a personalised plan."
+                    )
+                elif delta_pp > 0.5:
+                    st.warning(
+                        f"These slider values show a **higher** risk ({new_prob*100:.1f}%). "
+                        "Try adjusting toward healthier values — reducing blood pressure, "
+                        "cholesterol, smoking, or weight."
                     )
                 else:
-                    abs_pp = best["drop"] * 100.0
-                    rel_pct = (best["drop"] / base_prob * 100.0) if base_prob > 0 else 0.0
-                    st.markdown(
-                        f"**Most impactful lever:** {best['name']} → "
-                        f"{best['p']*100:.2f}% (−{abs_pp:.2f} pp, −{rel_pct:.1f}% relative)"
-                    )
+                    st.info("These changes have a minimal effect on the model's estimate for this profile.")
 
-            st.markdown("#### Evidence-based recommendations")
+        # ── Scenario sweep table ──────────────────────────────────────────────
+        st.markdown("---")
+        if IS_PATIENT_MODE:
+            st.markdown("#### Individual impact of each change")
             st.markdown(
-                """
-                **Smoking** — If you smoke, quitting is the single highest-impact change you can make.  
-                **Blood pressure** — If elevated, lifestyle changes and clinician-guided management can help.  
-                **Metabolic** — Managing blood sugar and weight reduces long-term cardiovascular risk.  
-                **Lifestyle** — Regular physical activity, a heart-healthy diet, quality sleep, and stress management all contribute.
-                """
+                "The table below tests each change **one at a time** from your current baseline, "
+                "so you can see which single change would help the most."
             )
         else:
-            st.info("Click **Run What-If Analysis** to see how lifestyle changes could affect your risk.")
+            st.markdown("#### Individual counterfactual scenarios (single-feature perturbation)")
+
+        # Build comprehensive scenario list from current patient values
+        scenarios_custom = []
+        if float(cur["CIGPDAY"]) > 0:
+            d = df_patient.copy(); d["CIGPDAY"] = 0.0
+            scenarios_custom.append(("Quit smoking completely", f"Cigs/day: {int(cur['CIGPDAY'])} → 0", d))
+        if float(cur["SYSBP"]) > 120:
+            d = df_patient.copy(); d["SYSBP"] = max(float(cur["SYSBP"]) - 10, 90.0)
+            scenarios_custom.append(("Lower blood pressure by 10 mmHg",
+                                     f"Sys BP: {int(cur['SYSBP'])} → {int(max(float(cur['SYSBP'])-10,90))}", d))
+            d2 = df_patient.copy(); d2["SYSBP"] = max(float(cur["SYSBP"]) - 20, 90.0)
+            scenarios_custom.append(("Lower blood pressure by 20 mmHg",
+                                     f"Sys BP: {int(cur['SYSBP'])} → {int(max(float(cur['SYSBP'])-20,90))}", d2))
+        if float(cur["BMI"]) > 24.9:
+            d = df_patient.copy(); d["BMI"] = max(float(cur["BMI"]) - 2.0, 18.5)
+            scenarios_custom.append(("Lose weight (BMI − 2)",
+                                     f"BMI: {cur['BMI']:.1f} → {max(float(cur['BMI'])-2,18.5):.1f}", d))
+            d2 = df_patient.copy(); d2["BMI"] = max(float(cur["BMI"]) - 5.0, 18.5)
+            scenarios_custom.append(("Lose more weight (BMI − 5)",
+                                     f"BMI: {cur['BMI']:.1f} → {max(float(cur['BMI'])-5,18.5):.1f}", d2))
+        if float(cur["TOTCHOL"]) > 180:
+            d = df_patient.copy(); d["TOTCHOL"] = max(float(cur["TOTCHOL"]) - 20, 100.0)
+            scenarios_custom.append(("Lower total cholesterol by 20 mg/dL",
+                                     f"Chol: {int(cur['TOTCHOL'])} → {int(max(float(cur['TOTCHOL'])-20,100))}", d))
+        if float(cur["LDLC"]) > 100:
+            d = df_patient.copy(); d["LDLC"] = max(float(cur["LDLC"]) - 30, 40.0)
+            scenarios_custom.append(("Lower LDL cholesterol by 30 mg/dL",
+                                     f"LDL: {int(cur['LDLC'])} → {int(max(float(cur['LDLC'])-30,40))}", d))
+        if float(cur["HDLC"]) < 60:
+            d = df_patient.copy(); d["HDLC"] = min(float(cur["HDLC"]) + 10, 120.0)
+            scenarios_custom.append(("Raise HDL good cholesterol by 10",
+                                     f"HDL: {int(cur['HDLC'])} → {int(min(float(cur['HDLC'])+10,120))}", d))
+        if float(cur["GLUCOSE"]) > 99:
+            d = df_patient.copy(); d["GLUCOSE"] = max(float(cur["GLUCOSE"]) - 15, 70.0)
+            scenarios_custom.append(("Lower blood sugar by 15 mg/dL",
+                                     f"Glucose: {int(cur['GLUCOSE'])} → {int(max(float(cur['GLUCOSE'])-15,70))}", d))
+        if float(cur["HEARTRTE"]) > 75:
+            d = df_patient.copy(); d["HEARTRTE"] = max(float(cur["HEARTRTE"]) - 10, 55.0)
+            scenarios_custom.append(("Lower resting heart rate by 10 bpm",
+                                     f"HR: {int(cur['HEARTRTE'])} → {int(max(float(cur['HEARTRTE'])-10,55))}", d))
+        # Combined best-case scenario
+        d_all = df_patient.copy()
+        if float(cur["CIGPDAY"]) > 0:        d_all["CIGPDAY"]  = 0.0
+        if float(cur["SYSBP"]) > 120:        d_all["SYSBP"]    = max(float(cur["SYSBP"]) - 15, 90.0)
+        if float(cur["BMI"]) > 24.9:         d_all["BMI"]      = max(float(cur["BMI"]) - 3.0, 18.5)
+        if float(cur["TOTCHOL"]) > 180:      d_all["TOTCHOL"]  = max(float(cur["TOTCHOL"]) - 20, 100.0)
+        if float(cur["GLUCOSE"]) > 99:       d_all["GLUCOSE"]  = max(float(cur["GLUCOSE"]) - 10, 70.0)
+        scenarios_custom.append(("Combined lifestyle improvements", "All modifiable factors improved", d_all))
+
+        if scenarios_custom:
+            sweep_rows = []
+            for name, desc, dfx in scenarios_custom:
+                p, _, _ = stacking_predict_proba_24(dfx, threshold=used_threshold)
+                drop_pp  = (base_prob - p) * 100.0
+                drop_rel = (base_prob - p) / base_prob * 100.0 if base_prob > 0 else 0.0
+                new_c, new_ic = interpret_risk(p)
+                sweep_rows.append({
+                    "Scenario":          name,
+                    "Description":       desc,
+                    "New risk (%)":      round(p * 100, 1),
+                    "Risk reduction (pp)": round(drop_pp, 1),
+                    "Reduction (%)":     round(drop_rel, 1),
+                    "New category":      f"{new_ic} {new_c}",
+                })
+            sweep_df = pd.DataFrame(sweep_rows).sort_values("Risk reduction (pp)", ascending=False)
+
+            # Highlight best row
+            def highlight_best(row):
+                if row.name == sweep_df.index[0]:
+                    return ["background-color: #EAF3DE"] * len(row)
+                return [""] * len(row)
+
+            fmt_sweep = {
+                "New risk (%)":         "{:.1f}",
+                "Risk reduction (pp)":  "{:+.1f}",
+                "Reduction (%)":        "{:+.1f}",
+            }
+            st.dataframe(
+                sweep_df.style.format(fmt_sweep).apply(highlight_best, axis=1),
+                use_container_width=True, hide_index=True
+            )
+
+            # Scenario impact bar chart
+            top_scenarios = sweep_df[sweep_df["Risk reduction (pp)"] > 0].head(8)
+            if not top_scenarios.empty:
+                fig_sc, ax_sc = plt.subplots(figsize=(8, max(3, len(top_scenarios) * 0.55)))
+                sc_labels = [s[:45] + "…" if len(s) > 45 else s
+                             for s in top_scenarios["Scenario"].tolist()]
+                sc_vals   = top_scenarios["Risk reduction (pp)"].tolist()
+                sc_colors = ["#1D9E75" if v > 0 else "#E24B4A" for v in sc_vals]
+                ax_sc.barh(range(len(sc_labels))[::-1], sc_vals,
+                           color=sc_colors, height=0.55, edgecolor="none")
+                for i, (val, lbl) in enumerate(zip(sc_vals, sc_labels)):
+                    ax_sc.text(val + 0.05, len(sc_labels) - 1 - i,
+                               f"−{val:.1f} pp", va="center", fontsize=9.5,
+                               color="#27500A", fontweight="500")
+                ax_sc.set_yticks(range(len(sc_labels))[::-1])
+                ax_sc.set_yticklabels(sc_labels, fontsize=9.5)
+                ax_sc.set_xlabel("Risk reduction (percentage points)", fontsize=10)
+                ax_sc.set_title(
+                    "Estimated risk reduction per scenario" if IS_PATIENT_MODE
+                    else "Single-feature counterfactual impact (pp reduction)",
+                    fontsize=10, fontweight="bold", color="#0f4c75"
+                )
+                ax_sc.axvline(0, color="#d3d1c7", linewidth=0.8)
+                ax_sc.spines["top"].set_visible(False)
+                ax_sc.spines["right"].set_visible(False)
+                ax_sc.spines["left"].set_visible(False)
+                plt.tight_layout()
+                st.pyplot(fig_sc, clear_figure=True)
+
+            # Best scenario callout
+            best_row = sweep_df.iloc[0]
+            if best_row["Risk reduction (pp)"] > 0:
+                if IS_PATIENT_MODE:
+                    _bname = best_row["Scenario"]
+                    _bnew  = best_row["New risk (%)"]
+                    _bdrop = best_row["Risk reduction (pp)"]
+                    st.success(
+                        f"**Most impactful single change: {_bname}**\n\n"
+                        f"This could lower your estimated risk from **{base_prob*100:.1f}%** "
+                        f"to **{_bnew:.1f}%** "
+                        f"(a reduction of **{_bdrop:.1f} percentage points**).\n\n"
+                        "Discuss this with your doctor to create a personalised action plan."
+                    )
+                else:
+                    _bname = best_row["Scenario"]
+                    _bnew  = best_row["New risk (%)"]
+                    _bdrop = best_row["Risk reduction (pp)"]
+                    _brel  = best_row["Reduction (%)"]
+                    st.info(
+                        f"**Highest-impact lever:** {_bname} — "
+                        f"predicted drop from {base_prob*100:.1f}% to {_bnew:.1f}% "
+                        f"(−{_bdrop:.1f} pp, −{_brel:.1f}% relative). "
+                        "Highlighted in green in the table above."
+                    )
+
+        # ── Evidence-based recommendations ───────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### Evidence-based recommendations" if IS_PATIENT_MODE
+                    else "#### Clinical evidence summary")
+        col_ev1, col_ev2 = st.columns(2)
+        with col_ev1:
+            st.markdown(
+                "**Quit smoking** — The single highest-impact modifiable risk factor. Risk reduction begins within weeks and continues for years.\n\n"
+                "**Lower blood pressure** — Each 10 mmHg reduction in systolic BP reduces CVD risk by ~10-20%. Lifestyle and medications both help.\n\n"
+                "**Control blood sugar** — Keeping fasting glucose in the normal range significantly reduces long-term cardiovascular risk."
+            )
+        with col_ev2:
+            st.markdown(
+                "**Improve cholesterol profile** — Lowering LDL and raising HDL both reduce cardiovascular risk. Statins, diet, and exercise all help.\n\n"
+                "**Healthy weight** — Even modest weight loss (5-10% of body weight) improves blood pressure, glucose, and cholesterol simultaneously.\n\n"
+                "**Physical activity** — 150 minutes/week of moderate aerobic activity reduces CVD risk by 20-30%. It also improves blood pressure and mental health."
+            )
+        st.caption(
+            "Sources: ACC/AHA Cardiovascular Risk Guidelines, Framingham Heart Study, "
+            "WHO Global Action Plan for NCDs. These recommendations are general — "
+            "always discuss your personal plan with a licensed clinician."
+        )
 
 
 # ─────────────────────────────────────────
