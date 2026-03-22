@@ -188,31 +188,73 @@ def _get_shap_explainers():
         st.session_state["xgb_explainer"] = shap.TreeExplainer(xgb_model)
     return st.session_state["rf_explainer"], st.session_state["xgb_explainer"]
 
-def _shap_local_bar(explainer, X_row_1xF, feature_names, title: str, max_display=12):
+def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
+                    title: str, max_display: int = 12):
+    """
+    Render a SHAP waterfall plot for a single patient row.
+    Shows baseline expected value, each feature's directional push
+    (red = raises risk, blue = lowers risk), and the final prediction.
+
+    Parameters
+    ----------
+    explainer    : shap.TreeExplainer fitted to the model
+    X_row_1xF   : scaled feature array, shape (1, n_features)
+    X_row_raw   : unscaled feature array, shape (1, n_features) — used for
+                  feature value annotations on the y-axis
+    feature_names: list of feature name strings (length == n_features)
+    title        : string shown above the plot
+    max_display  : how many features to show (sorted by |SHAP value|)
+    """
     if not SHAP_AVAILABLE or explainer is None:
-        st.info("SHAP not available."); return
-    sv = explainer.shap_values(X_row_1xF)
-    if isinstance(sv, list) and len(sv) == 2: sv = sv[1]
-    if hasattr(sv, "values"): sv = sv.values
-    sv = np.array(sv)
-    if sv.ndim == 3 and sv.shape[-1] == 2: sv = sv[:, :, 1]
-    if sv.ndim != 2 or sv.shape[0] != 1:
-        st.warning(f"Unexpected SHAP shape: {sv.shape}"); return
-    vals = np.ravel(sv[0])
-    if len(feature_names) != len(vals):
-        st.warning("Feature count mismatch"); return
-    idx = np.argsort(np.abs(vals))[::-1][:max_display]
-    names   = [feature_names[int(i)] for i in idx]
-    impacts = vals[idx]
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.barh(range(len(idx))[::-1], impacts)
-    ax.set_yticks(range(len(idx))[::-1])
-    ax.set_yticklabels(names)
-    ax.set_title(title)
-    ax.set_xlabel("SHAP impact on model output (class=1)")
-    ax.axvline(0, linewidth=1)
+        st.info("SHAP not available in this deployment.")
+        return
+
+    # ── 1. Compute raw SHAP values ──────────────────────────────────────────
+    sv_raw = explainer.shap_values(X_row_1xF)
+
+    # Normalise to class-1 probability (binary classifiers return a list)
+    if isinstance(sv_raw, list) and len(sv_raw) == 2:
+        sv_raw = sv_raw[1]
+    if hasattr(sv_raw, "values"):
+        sv_raw = sv_raw.values
+    sv_raw = np.array(sv_raw)
+    if sv_raw.ndim == 3 and sv_raw.shape[-1] == 2:
+        sv_raw = sv_raw[:, :, 1]
+    if sv_raw.ndim != 2 or sv_raw.shape[0] != 1:
+        st.warning(f"Unexpected SHAP shape: {sv_raw.shape}. Skipping waterfall.")
+        return
+
+    shap_vals_1d = np.ravel(sv_raw[0])          # shape (n_features,)
+    raw_vals_1d  = np.ravel(X_row_raw[0])        # shape (n_features,) — actual patient values
+
+    if len(feature_names) != len(shap_vals_1d):
+        st.warning("Feature name / SHAP value length mismatch. Skipping waterfall.")
+        return
+
+    # ── 2. Build shap.Explanation object ────────────────────────────────────
+    base_val = float(explainer.expected_value[1]) \
+               if isinstance(explainer.expected_value, (list, np.ndarray)) \
+               else float(explainer.expected_value)
+
+    explanation = shap.Explanation(
+        values       = shap_vals_1d,
+        base_values  = base_val,
+        data         = raw_vals_1d,
+        feature_names= feature_names,
+    )
+
+    # ── 3. Plot ──────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(9, max(5, max_display * 0.42)))
+
+    # shap.plots.waterfall draws onto the current figure
+    shap.plots.waterfall(explanation, max_display=max_display, show=False)
+
+    # Style tweaks to match CVDStack's clean aesthetic
+    fig = plt.gcf()
+    fig.suptitle(title, fontsize=11, fontweight="bold",
+                 color="#0f4c75", y=1.01)
     plt.tight_layout()
-    st.pyplot(fig)
+    st.pyplot(fig, clear_figure=True)
 
 # =========================
 # 5) LONGITUDINAL TRACKER (session-state backed)
@@ -578,38 +620,37 @@ with tab_calc:
         st.markdown("---")
         show_escalation_card(final_prob, category, IS_PATIENT_MODE)
 
-        # Patient SHAP text summary
+        # Patient SHAP — waterfall (XGB only, cleaner for patients)
         if IS_PATIENT_MODE:
             st.markdown("---")
             st.markdown("### What's driving your score?")
-            st.caption("Based on how the AI model weighed your health data. These are associations, not guarantees.")
+            st.caption(
+                "The chart below shows which of your health values pushed your risk "
+                "score up (red) or down (blue) compared to the average patient. "
+                "These are model-based associations — not diagnoses."
+            )
             if SHAP_AVAILABLE:
                 _, xgb_exp = _get_shap_explainers()
-                X_raw = df_input.values.astype(float)
-                X_scaled = scaler.transform(X_raw)
-                sv = xgb_exp.shap_values(X_scaled)
-                if isinstance(sv, list): sv = sv[1] if len(sv) >= 2 else sv[0]
-                if hasattr(sv, "values"): sv = sv.values
-                sv = np.array(sv)
-                if sv.ndim == 3 and sv.shape[-1] >= 2: sv = sv[:, :, 1]
-                if sv.ndim == 2 and sv.shape[0] == 1:
-                    vals = np.ravel(sv[0])
-                    pos_idx = [i for i in np.argsort(vals)[::-1] if vals[i] > 0][:3]
-                    neg_idx = [i for i in np.argsort(vals)     if vals[i] < 0][:3]
-                    col_i, col_d = st.columns(2)
-                    with col_i:
-                        if pos_idx:
-                            st.markdown("**Factors raising your risk:**")
-                            for i in pos_idx:
-                                st.markdown(f"- {SHAP_FRIENDLY.get(FEATURES_24[i], FEATURES_24[i])}")
-                    with col_d:
-                        if neg_idx:
-                            st.markdown("**Factors helping your risk:**")
-                            for i in neg_idx:
-                                st.markdown(f"- {SHAP_FRIENDLY.get(FEATURES_24[i], FEATURES_24[i])}")
-                    st.caption("These reflect model-based associations, not medical diagnoses or treatment advice.")
+                X_raw_pt    = df_input.values.astype(float)
+                X_scaled_pt = scaler.transform(X_raw_pt)
+
+                # Use friendly names for patient-facing waterfall
+                friendly_names = [
+                    SHAP_FRIENDLY.get(f, f) for f in FEATURES_24
+                ]
+                _shap_waterfall(
+                    xgb_exp, X_scaled_pt, X_raw_pt,
+                    friendly_names,
+                    "Your personal risk drivers (XGBoost model)",
+                    max_display=10,
+                )
+                st.caption(
+                    "E[f(X)] = average risk across all patients in the training dataset. "
+                    "f(x) = your individual predicted risk. "
+                    "Each bar shows how much one factor moved your score."
+                )
             else:
-                st.info("Install `shap` and `matplotlib` to enable AI-powered explanations.")
+                st.info("Install `shap` and `matplotlib` to enable the waterfall explanation.")
 
         # Clinician components + SHAP
         if show_components:
@@ -627,12 +668,23 @@ with tab_calc:
                     st.info("Add shap + matplotlib to requirements.txt to enable.")
                 else:
                     rf_exp, xgb_exp = _get_shap_explainers()
-                    X_raw = df_input.values.astype(float)
+                    X_raw    = df_input.values.astype(float)
                     X_scaled = scaler.transform(X_raw)
-                    st.markdown("**Random Forest — Local SHAP**")
-                    _shap_local_bar(rf_exp, X_scaled, FEATURES_24, "RF: Top local drivers", max_display=12)
-                    st.markdown("**XGBoost — Local SHAP**")
-                    _shap_local_bar(xgb_exp, X_scaled, FEATURES_24, "XGB: Top local drivers", max_display=12)
+                    st.markdown("**Random Forest — SHAP waterfall**")
+                    st.caption(
+                        "Red bars push the predicted risk higher than the baseline. "
+                        "Blue bars push it lower. Bar width = magnitude of impact. "
+                        "E[f(X)] is the model's average prediction across all training patients."
+                    )
+                    _shap_waterfall(rf_exp, X_scaled, X_raw, FEATURES_24,
+                                    "RF: Local SHAP waterfall", max_display=12)
+                    st.markdown("---")
+                    st.markdown("**XGBoost — SHAP waterfall**")
+                    st.caption(
+                        "Same interpretation as above for the XGBoost base learner."
+                    )
+                    _shap_waterfall(xgb_exp, X_scaled, X_raw, FEATURES_24,
+                                    "XGB: Local SHAP waterfall", max_display=12)
 
         st.info("💡 Open the **My Risk Over Time** tab to track changes across visits.")
 
@@ -926,7 +978,6 @@ with tab_coach:
                         headers={
                             "Content-Type": "application/json",
                             "anthropic-version": "2023-06-01",
-                            "x-api-key": st.secrets["ANTHROPIC_API_KEY"],
                         },
                         method="POST"
                     )
