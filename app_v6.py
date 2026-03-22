@@ -306,12 +306,14 @@ def _shap_waterfall(explainer, X_row_1xF, X_row_raw, feature_names,
         feature_names = feature_names,
     )
 
-    fig, ax = plt.subplots(figsize=(9, max(5, max_display * 0.45)))
+    fig, ax = plt.subplots(figsize=(9, max(8, max_display * 0.48)))
     shap.plots.waterfall(explanation, max_display=max_display, show=False)
     fig = plt.gcf()
     fig.suptitle(title, fontsize=11, fontweight="bold",
                  color="#0f4c75", y=1.02)
     plt.tight_layout()
+    # Extra bottom padding so E[f(X)] x-axis label is never clipped
+    fig.subplots_adjust(bottom=0.12)
     st.pyplot(fig, clear_figure=True)
 
 # =========================
@@ -701,7 +703,7 @@ with tab_calc:
                     xgb_exp, X_scaled_pt, X_raw_pt,
                     friendly_names,
                     "Your personal risk drivers (XGBoost model)",
-                    max_display=10,
+                    max_display=24,
                     model_prob=_p_xgb_pt,
                 )
                 st.caption(
@@ -743,7 +745,7 @@ with tab_calc:
                         "via a meta-learner, so the final risk % may differ from either base model."
                     )
                     _shap_waterfall(rf_exp, X_scaled, X_raw, FEATURES_24,
-                                    "RF: Local SHAP waterfall", max_display=12,
+                                    "RF: Local SHAP waterfall", max_display=24,
                                     model_prob=_p_rf)
                     st.markdown("---")
                     st.markdown("**XGBoost — SHAP waterfall**")
@@ -754,7 +756,7 @@ with tab_calc:
                         "(meta-learner output combining RF + XGB)."
                     )
                     _shap_waterfall(xgb_exp, X_scaled, X_raw, FEATURES_24,
-                                    "XGB: Local SHAP waterfall", max_display=12,
+                                    "XGB: Local SHAP waterfall", max_display=24,
                                     model_prob=_p_xgb)
 
         st.info("💡 Open the **My Risk Over Time** tab to track changes across visits.")
