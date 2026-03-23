@@ -1540,27 +1540,50 @@ with tab_coach:
             with st.spinner("Thinking…"):
                 try:
                     import urllib.request
-                    api_payload = json.dumps({
-                        "model": "claude-sonnet-4-20250514",
-                        "max_tokens": 1000,
-                        "system": SYSTEM_PROMPT,
-                        "messages": [
-                            {"role": m["role"], "content": m["content"]}
-                            for m in msgs
-                        ]
-                    }).encode("utf-8")
-                    req = urllib.request.Request(
-                        "https://api.anthropic.com/v1/messages",
-                        data=api_payload,
-                        headers={
-                            "Content-Type": "application/json",
-                            "anthropic-version": "2023-06-01",
-                        },
-                        method="POST"
-                    )
-                    with urllib.request.urlopen(req, timeout=30) as resp:
-                        result = json.loads(resp.read().decode("utf-8"))
-                    reply = result["content"][0]["text"]
+
+                    # Retrieve API key from Streamlit secrets
+                    # Add to Streamlit Cloud: Settings → Secrets → ANTHROPIC_API_KEY = "sk-ant-..."
+                    try:
+                        _api_key = st.secrets["ANTHROPIC_API_KEY"]
+                    except Exception:
+                        # Fallback: try common alternative secret names
+                        try:
+                            _api_key = st.secrets["anthropic_api_key"]
+                        except Exception:
+                            _api_key = None
+
+                    if not _api_key:
+                        reply = (
+                            "The Health Coach is not configured yet. "
+                            "Please add your Anthropic API key to Streamlit secrets:\n\n"
+                            "1. Go to your Streamlit Cloud dashboard\n"
+                            "2. Click **Settings** → **Secrets**\n"
+                            "3. Add: `ANTHROPIC_API_KEY = \"sk-ant-your-key-here\"`\n\n"
+                            "Once added, redeploy the app and the Health Coach will be active."
+                        )
+                    else:
+                        api_payload = json.dumps({
+                            "model": "claude-sonnet-4-20250514",
+                            "max_tokens": 1000,
+                            "system": SYSTEM_PROMPT,
+                            "messages": [
+                                {"role": m["role"], "content": m["content"]}
+                                for m in msgs
+                            ]
+                        }).encode("utf-8")
+                        req = urllib.request.Request(
+                            "https://api.anthropic.com/v1/messages",
+                            data=api_payload,
+                            headers={
+                                "Content-Type": "application/json",
+                                "x-api-key": _api_key,
+                                "anthropic-version": "2023-06-01",
+                            },
+                            method="POST"
+                        )
+                        with urllib.request.urlopen(req, timeout=30) as resp:
+                            result = json.loads(resp.read().decode("utf-8"))
+                        reply = result["content"][0]["text"]
                 except Exception as e:
                     reply = (
                         "I'm sorry, I couldn't connect to the AI assistant right now. "
