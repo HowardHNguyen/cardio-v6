@@ -15,41 +15,35 @@ st.markdown(
     #MainMenu { visibility: hidden; }
     header { visibility: hidden; height: 0%; }
 
-    /* ── Force sidebar open on mobile ─────────────────────────────────────── */
-
-    /* Keep sidebar visible and expanded on small screens */
-    @media (max-width: 768px) {
-        section[data-testid="stSidebar"] {
-            width: 80vw !important;
-            min-width: 280px !important;
-            transform: none !important;
-            visibility: visible !important;
-            display: block !important;
-        }
-        /* Make the collapse arrow button larger and more obvious on touch */
-        button[data-testid="baseButton-headerNoPadding"],
-        button[kind="header"] {
-            width: 44px !important;
-            height: 44px !important;
-            border-radius: 50% !important;
-            background: #0f4c75 !important;
-            color: white !important;
-        }
-        /* Shrink main content to leave room for sidebar */
-        section.main > div {
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
-        }
-        /* Stack 3-column form to single column */
+    /* ── Mobile: stack 3-col form to 1 col on narrow screens ──────── */
+    @media (max-width: 640px) {
         div[data-testid="column"] {
             min-width: 100% !important;
             flex: 1 1 100% !important;
         }
-        /* Shrink tab labels to fit 6 tabs */
         button[data-baseweb="tab"] {
             font-size: 11px !important;
             padding: 6px 4px !important;
         }
+    }
+
+    /* ── Make the sidebar open-arrow easy to tap on mobile ──────────
+       The native Streamlit [>] button is small. We make its hit area
+       bigger without moving or hiding it.                           */
+    [data-testid="collapsedControl"] {
+        width: 48px !important;
+        height: 48px !important;
+        border-radius: 50% !important;
+        background-color: #0f4c75 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.25) !important;
+    }
+    [data-testid="collapsedControl"] svg {
+        fill: white !important;
+        width: 20px !important;
+        height: 20px !important;
     }
     </style>
     """,
@@ -687,6 +681,33 @@ with st.sidebar:
 # =========================
 # 9) HERO HEADER
 # =========================
+
+# Mobile-only hint — tells users where the settings panel is.
+# Uses CSS to hide this on desktop (screens wider than 640px).
+st.markdown(
+    """
+    <div style="
+        background:#fff3cd;
+        border:1px solid #ffc107;
+        border-radius:8px;
+        padding:9px 14px;
+        margin-bottom:10px;
+        font-size:13px;
+        color:#856404;
+        display:none;
+    " id="mobile-hint">
+        &#9776; Tap the <b>&gt;</b> arrow at the top-left to open Settings
+        (Display mode, Alert threshold, SHAP options).
+    </div>
+    <style>
+        @media (max-width: 768px) {
+            #mobile-hint { display: block !important; }
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.markdown(
     """
     <div style="background-color:#0f4c75;padding:18px;border-radius:8px;margin-bottom:16px;">
@@ -701,35 +722,7 @@ st.markdown(
 
 
 # =========================
-# 10) MOBILE SIDEBAR HINT
-# =========================
-st.markdown(
-    """
-    <div style="
-        background:#e6f1fb;
-        border:1px solid #b5d4f4;
-        border-radius:8px;
-        padding:10px 14px;
-        margin-bottom:10px;
-        font-size:13px;
-        color:#0c447c;
-        display:flex;
-        align-items:center;
-        gap:10px;
-    ">
-        <span style="font-size:20px">&#9776;</span>
-        <span>
-            <b>Tap the sidebar arrow ( &#171; ) at the top-left</b> to set
-            <b>Display Mode</b> (Patient or Clinician), adjust the alert threshold,
-            and enable SHAP explanations.
-        </span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# =========================
-# 11) TABS
+# 10) TABS
 # =========================
 tab_calc, tab_trend, tab_bie, tab_coach, tab_model, tab_faq = st.tabs([
     "🧮 Risk Calculator",
