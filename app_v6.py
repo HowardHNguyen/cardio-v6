@@ -14,6 +14,36 @@ st.markdown(
     footer { visibility: hidden; height: 0%; }
     #MainMenu { visibility: hidden; }
     header { visibility: hidden; height: 0%; }
+
+    /* ── Mobile responsiveness ───────────────────────────────────────── */
+
+    /* Mode switcher pill styling */
+    div[data-testid="stRadio"] > label { font-weight: 600; font-size: 13px; }
+    div[data-testid="stRadio"] > div   { gap: 8px; }
+
+    /* Make hero header font smaller on narrow screens */
+    @media (max-width: 640px) {
+        div[data-testid="stMarkdownContainer"] h1 { font-size: 20px !important; }
+        /* Stack 3-col form to 1 col on mobile */
+        div[data-testid="column"] { min-width: 100% !important; flex: 1 1 100% !important; }
+        /* Compact tab labels */
+        button[data-baseweb="tab"] { font-size: 11px !important; padding: 6px 8px !important; }
+        /* Hide sidebar toggle arrow hint text */
+        section[data-testid="stSidebar"] > div:first-child { padding-top: 1rem; }
+    }
+
+    /* Mode switcher bar — always visible, sticky below header */
+    .mode-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #f1efe8;
+        border-radius: 8px;
+        padding: 8px 14px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+    }
+    .mode-bar span { font-size: 13px; color: #5f5e5a; }
     </style>
     """,
     unsafe_allow_html=True
@@ -452,7 +482,8 @@ def build_input_df_24(is_patient: bool):
 
     lbl, tip = label("SEX")
     sex = st.selectbox(lbl, ["Male", "Female"], index=0, key="calc_sex", help=tip)
-    col1, col2, col3 = st.columns(3)
+    # On mobile these columns stack vertically (CSS forces min-width:100%)
+    col1, col2, col3 = st.columns([1, 1, 1])
 
     with col1:
         lbl, tip = label("AGE")
@@ -490,7 +521,7 @@ def build_input_df_24(is_patient: bool):
     if is_patient:
         st.caption("Please answer based on any formal diagnoses from a doctor.")
 
-    col4, col5, col6 = st.columns(3)
+    col4, col5, col6 = st.columns([1, 1, 1])
 
     def yesno(field, col, key):
         lbl, tip = label(field)
@@ -600,13 +631,12 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    user_mode = st.radio(
-        "Display mode:",
-        ["Patient Mode", "Clinician / Research Mode"],
-        index=0,
-        help="Patient Mode uses plain language. Clinician Mode shows full technical details."
-    )
-    IS_PATIENT_MODE = (user_mode == "Patient Mode")
+    # Display mode is now controlled by the switcher at the top of the page
+    # (visible on both desktop and mobile). Sidebar shows the current mode.
+    _sidebar_mode_label = "🙋 Patient Mode" if IS_PATIENT_MODE else "🔬 Clinician Mode"
+    st.markdown(f"**Mode:** {_sidebar_mode_label}")
+    st.caption("Change mode using the switcher at the top of the page.")
+    st.markdown("---")
 
     threshold = st.slider(
         "Alert threshold (probability of CVD)",
@@ -645,6 +675,11 @@ with st.sidebar:
         a standalone diagnostic system.
         """
     )
+    st.markdown("---")
+    st.caption(
+        "📱 On mobile: use the mode switcher at the top of the page to switch "
+        "between Patient and Clinician views."
+    )
 
 
 # =========================
@@ -652,10 +687,15 @@ with st.sidebar:
 # =========================
 st.markdown(
     """
-    <div style="background-color:#0f4c75;padding:18px;border-radius:8px;margin-bottom:16px;">
-      <h1 style="color:white;margin-bottom:4px;">CVD Risk Prediction – Clinical Risk Stratification Model (v6.0)</h1>
-      <p style="color:#e0f2f1;margin:0;font-size:14px;">
-        10-Year Cardiovascular Risk Estimation • Longitudinal Tracking • Patient &amp; Clinician Modes
+    <div style="background-color:#0f4c75;padding:14px 18px;border-radius:8px;margin-bottom:12px;">
+      <h1 style="color:white;margin-bottom:4px;font-size:clamp(16px,4vw,28px);line-height:1.3;">
+        🫀 CVD Risk Prediction
+        <span style="font-size:clamp(12px,2.5vw,18px);font-weight:400;opacity:.85;">
+          &nbsp;v6.0 Clinical Risk Stratification
+        </span>
+      </h1>
+      <p style="color:#e0f2f1;margin:0;font-size:clamp(11px,2vw,14px);">
+        10-Year Cardiovascular Risk &bull; Longitudinal Tracking &bull; Patient &amp; Clinician Modes
       </p>
     </div>
     """,
@@ -664,7 +704,34 @@ st.markdown(
 
 
 # =========================
-# 10) TABS
+# 10) MOBILE MODE SWITCHER
+# Always visible — patients/clinicians on phones see this immediately
+# without needing to find the sidebar.
+# =========================
+_mode_col1, _mode_col2 = st.columns([3, 2])
+with _mode_col1:
+    _mobile_mode = st.radio(
+        "View mode",
+        ["🙋 Patient Mode", "🔬 Clinician Mode"],
+        index=0,
+        horizontal=True,
+        key="mobile_mode_switcher",
+        help="Switch between plain-language patient view and full clinical/technical view",
+        label_visibility="collapsed",
+    )
+    IS_PATIENT_MODE = (_mobile_mode == "🙋 Patient Mode")
+with _mode_col2:
+    st.caption(
+        "Patient Mode uses plain language. "
+        "Clinician Mode shows technical details and SHAP explanations."
+    )
+
+# ── Sync sidebar radio to match mobile switcher ──────────────────────────────
+# (sidebar radio is now display-only on mobile but stays functional on desktop)
+
+
+# =========================
+# 11) TABS
 # =========================
 tab_calc, tab_trend, tab_bie, tab_coach, tab_model, tab_faq = st.tabs([
     "🧮 Risk Calculator",
