@@ -10,12 +10,35 @@ from pathlib import Path
 st.markdown(
     """
     <style>
-    [data-testid="stToolbar"] { visibility: hidden; height: 0%; position: fixed; }
-    footer { visibility: hidden; height: 0%; }
-    #MainMenu { visibility: hidden; }
-    header { visibility: hidden; height: 0%; }
+    /* Hide toolbar, footer, menu — but NOT the header itself,
+       because the sidebar toggle arrow lives inside the header. */
+    [data-testid="stToolbar"]       { visibility: hidden; height: 0%; position: fixed; }
+    footer                          { visibility: hidden; height: 0%; }
+    #MainMenu                       { visibility: hidden; }
 
-    /* ── Mobile: stack 3-col form to 1 col on narrow screens ──────── */
+    /* Hide the deploy button and other header chrome, but keep the header
+       element visible so the sidebar arrow button remains accessible. */
+    [data-testid="stHeader"]        { background: transparent; }
+    [data-testid="stDecoration"]    { display: none; }
+
+    /* ── Make sidebar arrow button large and easy to tap on mobile ── */
+    [data-testid="collapsedControl"] {
+        width: 48px !important;
+        height: 48px !important;
+        border-radius: 50% !important;
+        background-color: #0f4c75 !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.30) !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    [data-testid="collapsedControl"] svg {
+        fill: white !important;
+        width: 22px !important;
+        height: 22px !important;
+    }
+
+    /* ── Mobile: stack 3-col form to 1 col ───────────────────────── */
     @media (max-width: 640px) {
         div[data-testid="column"] {
             min-width: 100% !important;
@@ -25,25 +48,6 @@ st.markdown(
             font-size: 11px !important;
             padding: 6px 4px !important;
         }
-    }
-
-    /* ── Make the sidebar open-arrow easy to tap on mobile ──────────
-       The native Streamlit [>] button is small. We make its hit area
-       bigger without moving or hiding it.                           */
-    [data-testid="collapsedControl"] {
-        width: 48px !important;
-        height: 48px !important;
-        border-radius: 50% !important;
-        background-color: #0f4c75 !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.25) !important;
-    }
-    [data-testid="collapsedControl"] svg {
-        fill: white !important;
-        width: 20px !important;
-        height: 20px !important;
     }
     </style>
     """,
@@ -682,27 +686,16 @@ with st.sidebar:
 # 9) HERO HEADER
 # =========================
 
-# Mobile-only hint — tells users where the settings panel is.
-# Uses CSS to hide this on desktop (screens wider than 640px).
+# Mobile-only pill — hidden on desktop via CSS display:none + media override
 st.markdown(
     """
-    <div style="
-        background:#fff3cd;
-        border:1px solid #ffc107;
-        border-radius:8px;
-        padding:9px 14px;
-        margin-bottom:10px;
-        font-size:13px;
-        color:#856404;
-        display:none;
-    " id="mobile-hint">
-        &#9776; Tap the <b>&gt;</b> arrow at the top-left to open Settings
-        (Display mode, Alert threshold, SHAP options).
+    <div id="mob-hint" style="display:none;background:#fff3cd;border:1px solid #ffc107;
+        border-radius:8px;padding:8px 14px;margin-bottom:8px;font-size:13px;color:#856404;">
+        &#9776;&nbsp; Tap the <b>navy circle arrow</b> at top-left to open Settings
+        &nbsp;(Display mode · Alert threshold · SHAP options)
     </div>
     <style>
-        @media (max-width: 768px) {
-            #mobile-hint { display: block !important; }
-        }
+        @media (max-width: 768px) { #mob-hint { display: block !important; } }
     </style>
     """,
     unsafe_allow_html=True,
