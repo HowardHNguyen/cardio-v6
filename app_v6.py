@@ -15,17 +15,37 @@ st.markdown(
     #MainMenu { visibility: hidden; }
     header { visibility: hidden; height: 0%; }
 
-    /* ── Mobile: ensure mode bar is touch-friendly ───────────────── */
-    div[data-testid="stHorizontalBlock"] div[data-testid="stRadio"] label {
-        font-size: 15px !important;
-        padding: 6px 12px !important;
-    }
-    /* Stack 3-col form to 1 col on narrow screens */
-    @media (max-width: 640px) {
+    /* ── Force sidebar open on mobile ─────────────────────────────────────── */
+
+    /* Keep sidebar visible and expanded on small screens */
+    @media (max-width: 768px) {
+        section[data-testid="stSidebar"] {
+            width: 80vw !important;
+            min-width: 280px !important;
+            transform: none !important;
+            visibility: visible !important;
+            display: block !important;
+        }
+        /* Make the collapse arrow button larger and more obvious on touch */
+        button[data-testid="baseButton-headerNoPadding"],
+        button[kind="header"] {
+            width: 44px !important;
+            height: 44px !important;
+            border-radius: 50% !important;
+            background: #0f4c75 !important;
+            color: white !important;
+        }
+        /* Shrink main content to leave room for sidebar */
+        section.main > div {
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }
+        /* Stack 3-column form to single column */
         div[data-testid="column"] {
             min-width: 100% !important;
             flex: 1 1 100% !important;
         }
+        /* Shrink tab labels to fit 6 tabs */
         button[data-baseweb="tab"] {
             font-size: 11px !important;
             padding: 6px 4px !important;
@@ -103,14 +123,6 @@ def load_artifacts():
     return scaler, rf_model, xgb_model, meta_model, features_24, bg_data
 
 scaler, rf_model, xgb_model, meta_model, FEATURES_24, BG_DATA = load_artifacts()
-
-# ── Mode is stored in session_state so it persists across reruns ──────────────
-# Must be defined here — before sidebar and before any IS_PATIENT_MODE reference.
-if "cvd_mode" not in st.session_state:
-    st.session_state["cvd_mode"] = "Patient Mode"
-# IS_PATIENT_MODE is set here as a starting value; the mode switcher below
-# will update it after the user interacts.
-IS_PATIENT_MODE = (st.session_state["cvd_mode"] == "Patient Mode")
 
 # =========================
 # 3) PLAIN-LANGUAGE LABELS
@@ -624,8 +636,14 @@ with st.sidebar:
         unsafe_allow_html=True
     )
     st.markdown("---")
-    st.caption("Current mode: **" + ("🙋 Patient" if IS_PATIENT_MODE else "🔬 Clinician") + "** — change via the switcher at the top of the page.")
-    st.markdown("---")
+
+    user_mode = st.radio(
+        "Display mode:",
+        ["Patient Mode", "Clinician / Research Mode"],
+        index=0,
+        help="Patient Mode uses plain language. Clinician Mode shows full technical details."
+    )
+    IS_PATIENT_MODE = (user_mode == "Patient Mode")
 
     threshold = st.slider(
         "Alert threshold (probability of CVD)",
@@ -683,30 +701,32 @@ st.markdown(
 
 
 # =========================
-# 10) MODE SWITCHER (main page — visible on all screen sizes)
-# This is the ONLY place the user switches mode.
-# It writes to session_state so the value persists across tab switches.
+# 10) MOBILE SIDEBAR HINT
 # =========================
-_m1, _m2 = st.columns([2, 3])
-with _m1:
-    _chosen = st.radio(
-        "View mode",
-        ["🙋 Patient Mode", "🔬 Clinician Mode"],
-        index=0 if st.session_state["cvd_mode"] == "Patient Mode" else 1,
-        horizontal=True,
-        key="main_mode_switcher",
-        label_visibility="collapsed",
-    )
-    # Update session_state and IS_PATIENT_MODE from this control
-    st.session_state["cvd_mode"] = "Patient Mode" if _chosen == "🙋 Patient Mode" else "Clinician / Research Mode"
-    IS_PATIENT_MODE = (st.session_state["cvd_mode"] == "Patient Mode")
-with _m2:
-    if IS_PATIENT_MODE:
-        st.caption("**Patient Mode** — plain language, actionable results. Switch to Clinician Mode for technical details.")
-    else:
-        st.caption("**Clinician Mode** — SHAP explanations, RF/XGB components, full technical output.")
-
-st.markdown("---")
+st.markdown(
+    """
+    <div style="
+        background:#e6f1fb;
+        border:1px solid #b5d4f4;
+        border-radius:8px;
+        padding:10px 14px;
+        margin-bottom:10px;
+        font-size:13px;
+        color:#0c447c;
+        display:flex;
+        align-items:center;
+        gap:10px;
+    ">
+        <span style="font-size:20px">&#9776;</span>
+        <span>
+            <b>Tap the sidebar arrow ( &#171; ) at the top-left</b> to set
+            <b>Display Mode</b> (Patient or Clinician), adjust the alert threshold,
+            and enable SHAP explanations.
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # =========================
 # 11) TABS
