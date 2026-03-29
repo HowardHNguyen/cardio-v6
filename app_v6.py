@@ -15,17 +15,20 @@ st.markdown(
     #MainMenu { visibility: hidden; }
     header { visibility: hidden; height: 0%; }
 
-    /* ── Mobile responsiveness ───────────────────────────────── */
+    /* ── Mobile: ensure mode bar is touch-friendly ───────────────── */
+    div[data-testid="stHorizontalBlock"] div[data-testid="stRadio"] label {
+        font-size: 15px !important;
+        padding: 6px 12px !important;
+    }
+    /* Stack 3-col form to 1 col on narrow screens */
     @media (max-width: 640px) {
-        /* Stack 3-col form to single column on phones */
         div[data-testid="column"] {
             min-width: 100% !important;
             flex: 1 1 100% !important;
         }
-        /* Shrink tab labels so all 6 fit */
         button[data-baseweb="tab"] {
             font-size: 11px !important;
-            padding: 6px 6px !important;
+            padding: 6px 4px !important;
         }
     }
     </style>
@@ -100,6 +103,14 @@ def load_artifacts():
     return scaler, rf_model, xgb_model, meta_model, features_24, bg_data
 
 scaler, rf_model, xgb_model, meta_model, FEATURES_24, BG_DATA = load_artifacts()
+
+# ── Mode is stored in session_state so it persists across reruns ──────────────
+# Must be defined here — before sidebar and before any IS_PATIENT_MODE reference.
+if "cvd_mode" not in st.session_state:
+    st.session_state["cvd_mode"] = "Patient Mode"
+# IS_PATIENT_MODE is set here as a starting value; the mode switcher below
+# will update it after the user interacts.
+IS_PATIENT_MODE = (st.session_state["cvd_mode"] == "Patient Mode")
 
 # =========================
 # 3) PLAIN-LANGUAGE LABELS
@@ -613,21 +624,8 @@ with st.sidebar:
         unsafe_allow_html=True
     )
     st.markdown("---")
-
-    # Initialise session_state mode on first run
-    if "cvd_mode" not in st.session_state:
-        st.session_state["cvd_mode"] = "Patient Mode"
-
-    user_mode = st.radio(
-        "Display mode:",
-        ["Patient Mode", "Clinician / Research Mode"],
-        index=0 if st.session_state["cvd_mode"] == "Patient Mode" else 1,
-        help="Patient Mode uses plain language. Clinician Mode shows full technical details.",
-        key="sidebar_mode_radio",
-    )
-    st.session_state["cvd_mode"] = user_mode
-    IS_PATIENT_MODE = (user_mode == "Patient Mode")
-    st.caption("📱 On mobile, a mode switcher also appears below the title.")
+    st.caption("Current mode: **" + ("🙋 Patient" if IS_PATIENT_MODE else "🔬 Clinician") + "** — change via the switcher at the top of the page.")
+    st.markdown("---")
 
     threshold = st.slider(
         "Alert threshold (probability of CVD)",
@@ -673,16 +671,10 @@ with st.sidebar:
 # =========================
 st.markdown(
     """
-    <div style="background-color:#0f4c75;padding:14px 18px;border-radius:8px;margin-bottom:8px;">
-      <h1 style="color:white;margin-bottom:4px;
-                 font-size:clamp(16px,4vw,26px);line-height:1.3;">
-        🫀 CVD Risk Prediction
-        <span style="font-size:clamp(11px,2.5vw,16px);font-weight:400;opacity:.9;">
-          &mdash; Clinical Risk Model v6.0
-        </span>
-      </h1>
-      <p style="color:#e0f2f1;margin:0;font-size:clamp(11px,2vw,13px);">
-        10-Year Cardiovascular Risk &bull; Longitudinal Tracking &bull; Patient &amp; Clinician Modes
+    <div style="background-color:#0f4c75;padding:18px;border-radius:8px;margin-bottom:16px;">
+      <h1 style="color:white;margin-bottom:4px;">CVD Risk Prediction – Clinical Risk Stratification Model (v6.0)</h1>
+      <p style="color:#e0f2f1;margin:0;font-size:14px;">
+        10-Year Cardiovascular Risk Estimation • Longitudinal Tracking • Patient &amp; Clinician Modes
       </p>
     </div>
     """,
@@ -691,32 +683,30 @@ st.markdown(
 
 
 # =========================
-# 10) MOBILE MODE SWITCHER
-# Sits below the header — always visible on mobile without opening the sidebar.
-# Syncs bidirectionally with the sidebar radio via st.session_state["cvd_mode"].
+# 10) MODE SWITCHER (main page — visible on all screen sizes)
+# This is the ONLY place the user switches mode.
+# It writes to session_state so the value persists across tab switches.
 # =========================
-_sw_col, _sw_cap = st.columns([2, 3])
-with _sw_col:
-    _mobile_choice = st.radio(
-        "Mode",
+_m1, _m2 = st.columns([2, 3])
+with _m1:
+    _chosen = st.radio(
+        "View mode",
         ["🙋 Patient Mode", "🔬 Clinician Mode"],
-        index=0 if st.session_state.get("cvd_mode", "Patient Mode") == "Patient Mode" else 1,
+        index=0 if st.session_state["cvd_mode"] == "Patient Mode" else 1,
         horizontal=True,
-        key="mobile_mode_switcher",
+        key="main_mode_switcher",
         label_visibility="collapsed",
     )
-    # Write back to session_state so sidebar reflects the same choice
-    if _mobile_choice == "🙋 Patient Mode":
-        st.session_state["cvd_mode"] = "Patient Mode"
-    else:
-        st.session_state["cvd_mode"] = "Clinician / Research Mode"
-    # Override IS_PATIENT_MODE based on whichever control was used last
+    # Update session_state and IS_PATIENT_MODE from this control
+    st.session_state["cvd_mode"] = "Patient Mode" if _chosen == "🙋 Patient Mode" else "Clinician / Research Mode"
     IS_PATIENT_MODE = (st.session_state["cvd_mode"] == "Patient Mode")
-with _sw_cap:
-    st.caption(
-        "🙋 **Patient Mode** — plain language, actionable guidance  ·  "
-        "🔬 **Clinician Mode** — technical details, SHAP explanations"
-    )
+with _m2:
+    if IS_PATIENT_MODE:
+        st.caption("**Patient Mode** — plain language, actionable results. Switch to Clinician Mode for technical details.")
+    else:
+        st.caption("**Clinician Mode** — SHAP explanations, RF/XGB components, full technical output.")
+
+st.markdown("---")
 
 # =========================
 # 11) TABS
